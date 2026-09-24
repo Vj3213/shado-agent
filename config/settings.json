@@ -1,0 +1,32 @@
+{
+  "allow_private_chats": true,
+  "trigger": {
+    "reply_to_everything": true,
+    "prefixes": ["ved:", "@ved"],
+    "keywords": [
+      "breakfast", "lunch", "dinner", "meal", "hungry",
+      "khana", "khaana", "khaya", "khayi", "kha liya", "kha liye",
+      "bhookh", "bhook", "nashta", "nashte",
+      "recipe", "cook", "cooked", "eating", "ate", "food",
+      "suggest", "menu", "diet"
+    ],
+    "patterns": ["kha+n[ei]?", "kha+u", "bhu+k+h?", "nasht[ae]?"],
+    "followup_window_seconds": 300
+  },
+  "context": {
+    "window": 20,
+    "session_hours": 6,
+    "exclude_eaten_days": 3,
+    "exclude_suggested_days": 2,
+    "suggestion_history_days": 3
+  },
+  "gemini": {
+    "fallback_models": ["gemini-3.6-flash", "gemini-3.8-flash"],
+    "retry_rounds": 2
+  },
+  "delays": {
+    "base_ms": [900, 2200],
+    "ms_per_char": [28, 45],
+    "max_ms": 12000
+  }
+}

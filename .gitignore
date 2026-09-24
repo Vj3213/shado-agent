@@ -1,0 +1,21 @@
+# --- SECRETS: never commit (AI read-access is denied in opencode's global config) ---
+.env
+*.env
+!.env.example
+
+# --- WhatsApp linked-device session (credentials) ---
+gateway/auth/
+
+# --- Node ---
+node_modules/
+gateway/dist/
+
+# --- Python ---
+__pycache__/
+*.pyc
+.venv/
+.pytest_cache/
+
+# --- misc ---
+*.log
+.DS_Store

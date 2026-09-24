@@ -1,0 +1,25 @@
+{
+  "name": "meal-agent-gateway",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "WhatsApp gateway (Baileys) for the meal agent. Handles connect/receive/send only.",
+  "scripts": {
+    "dev": "tsx src/index.ts",
+    "build": "tsc",
+    "start": "node dist/index.js"
+  },
+  "dependencies": {
+    "@hapi/boom": "10.0.1",
+    "@whiskeysockets/baileys": "6.7.24",
+    "dotenv": "16.4.5",
+    "pino": "9.7.0",
+    "qrcode-terminal": "0.12.0"
+  },
+  "devDependencies": {
+    "@types/node": "20.14.10",
+    "@types/qrcode-terminal": "0.12.2",
+    "tsx": "4.16.2",
+    "typescript": "5.5.3"
+  }
+}
