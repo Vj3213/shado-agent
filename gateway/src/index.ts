@@ -23,7 +23,7 @@ for (const method of ["info", "error", "warn"] as const) {
 let sock: WASocket | null = null;
 
 async function main(): Promise<void> {
-  console.log("Starting whatsapp-agent gateway...");
+  console.log("Starting shado-agent gateway...");
 
   sock = await connect({
     onSocketReady: (socket) => {

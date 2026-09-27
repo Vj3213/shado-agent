@@ -1,4 +1,4 @@
-"""Repository interface for the whatsapp agent.
+"""Repository interface for the shado agent.
 
 The agent depends on this protocol, never on Postgres directly, so the
 backend can be swapped (e.g. to SQLite) without touching agent logic.

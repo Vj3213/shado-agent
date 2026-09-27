@@ -71,8 +71,8 @@ class OpenRouterClient:
         headers = {
             "Authorization": f"Bearer {self._key}",
             "Content-Type": "application/json",
-            "HTTP-Referer": "https://github.com/vedjha/whatsapp-agent",
-            "X-Title": "WhatsApp Agent",
+            "HTTP-Referer": "https://github.com/vedjha/shado-agent",
+            "X-Title": "Shado Agent",
         }
 
         last_error: Exception | None = None

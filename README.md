@@ -1,4 +1,4 @@
-# WhatsApp Agent
+# Shado Agent
 
 A two-way AI agent that joins an existing private WhatsApp group **as a normal
 linked device** (not a Meta Business bot), chats like a human member, suggests
@@ -56,7 +56,7 @@ Prerequisites: Node ≥ 20.10, Python 3.10+, a running local Postgres
 
 ```bash
 # 1. clone + install
-git clone <repo-url> && cd whatsapp-agent
+git clone <repo-url> && cd shado-agent
 python3 -m venv .venv && .venv/bin/pip install -r agent/requirements.txt
 cd gateway && npm install && cd ..
 

@@ -27,7 +27,7 @@ from storage import (
     SuggestionRow,
 )
 
-app = FastAPI(title="whatsapp-agent", version="0.2.0")
+app = FastAPI(title="shado-agent", version="0.2.0")
 
 config = load_config()
 repo = PostgresRepository(config.database_url)
