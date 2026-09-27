@@ -10,7 +10,9 @@ dotenv.config({ path: path.join(root, ".env") });
 
 export interface DelaySettings {
   base_ms: [number, number];
+  reading_ms_per_char: [number, number];
   ms_per_char: [number, number];
+  extra_delay_ms: [number, number];
   max_ms: number;
 }
 
@@ -36,6 +38,7 @@ export const config = {
   agentUrl: process.env.AGENT_URL ?? "http://127.0.0.1:8100",
   gatewayPort: Number(process.env.GATEWAY_PORT ?? 8090),
   linkPhoneNumber: process.env.LINK_PHONE_NUMBER || undefined,
+  operatorJid: process.env.OPERATOR_JID || undefined,
   authDir: path.join(root, "gateway", "auth"),
 };
 

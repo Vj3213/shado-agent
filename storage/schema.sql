@@ -69,3 +69,15 @@ CREATE TABLE IF NOT EXISTS suggestion (
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_suggestion_group ON suggestion (group_id, created_at DESC);
+
+-- Consent-gated dynamic allowlist, controlled from the operator's self-chat:
+-- pending (asked once) -> granted (TTL) / declined (silent forever)
+--                      -> revoked (re-asks on next message)
+CREATE TABLE IF NOT EXISTS chat_consents (
+    chat_id    TEXT PRIMARY KEY,
+    status     TEXT NOT NULL DEFAULT 'pending'
+               CHECK (status IN ('pending', 'granted', 'declined', 'revoked')),
+    granted_at TIMESTAMPTZ,
+    expires_at TIMESTAMPTZ,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);

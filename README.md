@@ -161,6 +161,16 @@ restart. Logged out? Delete `gateway/auth/` and link again.
   chats** when `allow_private_chats` is true in `config/settings.json` (DM
   senders appear as `...@s.whatsapp.net` / `...@lid`). Other groups and chats
   are ignored; own outgoing messages via `fromMe`.
+- **Consent-gated chats (operator console):** unknown chats never get replies
+  automatically. First message from a chat that isn't the allowlisted group →
+  the bot asks *you* in your own "Message yourself" chat (who asked, what they
+  said) — once, not per message. Reply there: `YES` (agent handles that chat
+  for `consent_ttl_hours`, default 24h) · `NO` (silent forever) · `LIST` ·
+  `STOP` (end all) or `STOP 2` (end one, by LIST number). Multiple chats can
+  be agent-handled at once — each keeps its own conversation context.
+  Sending a manual message from the bot phone to a new chat triggers the same
+  consent ask. Consent state lives in `chat_consents` and survives restarts.
+  Allowlisted groups/private settings keep their static behavior.
 - **Bot-initiated messages:** the gateway runs a tiny local relay
   (`127.0.0.1:GATEWAY_PORT`):
   `.venv/bin/python scripts/initiate.py` (group) or `... initiate.py dm`

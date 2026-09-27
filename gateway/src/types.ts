@@ -13,4 +13,6 @@ export interface IncomingMessage {
 export interface AgentDecision {
   reply: string | null;
   reason: string;
+  /** Non-null: text the gateway must deliver to the operator's self-chat. */
+  self_prompt?: string | null;
 }

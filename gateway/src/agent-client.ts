@@ -28,17 +28,44 @@ export async function askAgent(msg: IncomingMessage): Promise<AgentDecision | nu
   }
 }
 
-/** Fire-and-forget record of a message we ourselves sent into the group. */
-export async function reportOutgoing(msg: Omit<IncomingMessage, "sender">): Promise<void> {
+/** Operator console: commands typed in the bot phone's self-chat. */
+export async function askAgentConsole(text: string): Promise<AgentDecision | null> {
   try {
-    await fetch(`${config.agentUrl}/messages/outgoing`, {
+    const response = await fetch(`${config.agentUrl}/messages/console`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ text }),
+      signal: AbortSignal.timeout(30_000),
+    });
+    if (!response.ok) {
+      console.error(`[agent-client] console returned HTTP ${response.status}`);
+      return null;
+    }
+    return (await response.json()) as AgentDecision;
+  } catch (error) {
+    console.error("[agent-client] console call failed:", error);
+    return null;
+  }
+}
+
+/** Record a message we ourselves sent; returns the agent's decision, which
+ * may carry a consent prompt when the operator messaged a brand-new chat. */
+export async function reportOutgoing(msg: Omit<IncomingMessage, "sender">): Promise<AgentDecision | null> {
+  try {
+    const response = await fetch(`${config.agentUrl}/messages/outgoing`, {
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify(msg),
-      signal: AbortSignal.timeout(5_000),
+      signal: AbortSignal.timeout(15_000),
     });
+    if (!response.ok) {
+      console.error(`[agent-client] outgoing returned HTTP ${response.status}`);
+      return null;
+    }
+    return (await response.json()) as AgentDecision;
   } catch (error) {
     console.error("[agent-client] failed to report outgoing message:", error);
+    return null;
   }
 }
 

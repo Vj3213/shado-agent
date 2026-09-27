@@ -1,5 +1,7 @@
 {
   "allow_private_chats": true,
+  "consent_ttl_hours": 24,
+  "consent_pending_timeout_minutes": 15,
   "trigger": {
     "reply_to_everything": true,
     "prefixes": ["ved:", "@ved"],
@@ -26,7 +28,9 @@
   },
   "delays": {
     "base_ms": [900, 2200],
+    "reading_ms_per_char": [4, 8],
     "ms_per_char": [28, 45],
-    "max_ms": 12000
+    "extra_delay_ms": [1000, 5000],
+    "max_ms": 20000
   }
 }

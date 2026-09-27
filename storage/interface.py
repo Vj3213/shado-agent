@@ -90,3 +90,43 @@ class MealAgentRepository(Protocol):
 
     def mark_suggestion_selected(self, group_id: str, dish: str) -> bool: ...
 
+    # -- consent-gated dynamic allowlist -----------------------------------
+
+    def request_consent(self, chat_id: str, pending_timeout_minutes: int = 15) -> bool:
+        """Ask the operator about this chat once. True if a NEW prompt was
+        created (or re-created after revoke/expiry/ask-timeout); False if
+        pending (fresh) or declined."""
+        ...
+
+    def grant_latest_pending(self, ttl_hours: int) -> str | None:
+        """Approve the most recent pending chat; returns its chat_id."""
+        ...
+
+    def decline_latest_pending(self) -> str | None: ...
+
+    def has_active_consent(self, chat_id: str) -> bool: ...
+
+    def active_consents(self) -> list[tuple[str, object]]:
+        """[(chat_id, expires_at)] for currently granted chats."""
+        ...
+
+    def pending_consents(self) -> list[tuple[str]]:
+        """[(chat_id,)] awaiting the operator's YES/NO."""
+        ...
+
+    def declined_consents(self) -> list[tuple[str]]:
+        """[(chat_id,)] the operator explicitly refused."""
+        ...
+
+    def grant_consent(self, chat_id: str, ttl_hours: int) -> bool:
+        """Activate a specific chat (e.g. re-allowing a declined one)."""
+        ...
+
+    def revoke_active_consents(self) -> list[str]:
+        """Revoke all granted chats; returns the revoked chat ids."""
+        ...
+
+    def revoke_consent(self, chat_id: str) -> str | None:
+        """Revoke one specific chat; returns its id if it was active."""
+        ...
+

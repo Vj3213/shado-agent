@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import json
-from datetime import date, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 
 import psycopg
@@ -191,6 +191,131 @@ class PostgresRepository(MealAgentRepository):
                 (group_id, dish),
             )
             return cur.rowcount > 0
+
+    # -- consent-gated dynamic allowlist -----------------------------------
+
+    def request_consent(self, chat_id: str, pending_timeout_minutes: int = 15) -> bool:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT status, updated_at FROM chat_consents WHERE chat_id = %s",
+                (chat_id,),
+            )
+            row = cur.fetchone()
+            if row is None:
+                cur.execute(
+                    "INSERT INTO chat_consents (chat_id, status) VALUES (%s, 'pending')",
+                    (chat_id,),
+                )
+                return True
+            status, updated_at = row[0], row[1]
+            if status == "pending":
+                # A pending ask that nobody answered (or whose prompt never
+                # delivered) must not silence the chat forever — re-ask after
+                # the configured timeout so transient failures self-heal.
+                stale = (datetime.now(timezone.utc) - updated_at).total_seconds() / 60
+                if stale >= pending_timeout_minutes:
+                    cur.execute(
+                        "UPDATE chat_consents SET updated_at = now() WHERE chat_id = %s",
+                        (chat_id,),
+                    )
+                    return True
+                return False
+            if status == "declined":
+                return False  # explicit refusal: never re-ask
+            # granted (expired) or revoked -> ask again
+            cur.execute(
+                "UPDATE chat_consents SET status = 'pending', updated_at = now() "
+                "WHERE chat_id = %s",
+                (chat_id,),
+            )
+            return True
+
+    def grant_latest_pending(self, ttl_hours: int) -> str | None:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "UPDATE chat_consents SET status = 'granted', granted_at = now(), "
+                "expires_at = now() + make_interval(hours => %s), updated_at = now() "
+                "WHERE chat_id = (SELECT chat_id FROM chat_consents "
+                "  WHERE status = 'pending' ORDER BY updated_at DESC LIMIT 1) "
+                "RETURNING chat_id",
+                (ttl_hours,),
+            )
+            row = cur.fetchone()
+            return row[0] if row else None
+
+    def decline_latest_pending(self) -> str | None:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "UPDATE chat_consents SET status = 'declined', updated_at = now() "
+                "WHERE chat_id = (SELECT chat_id FROM chat_consents "
+                "  WHERE status = 'pending' ORDER BY updated_at DESC LIMIT 1) "
+                "RETURNING chat_id"
+            )
+            row = cur.fetchone()
+            return row[0] if row else None
+
+    def has_active_consent(self, chat_id: str) -> bool:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT 1 FROM chat_consents WHERE chat_id = %s "
+                "AND status = 'granted' AND (expires_at IS NULL OR expires_at > now())",
+                (chat_id,),
+            )
+            return cur.fetchone() is not None
+
+    def active_consents(self) -> list[tuple[str, object]]:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT chat_id, expires_at FROM chat_consents "
+                "WHERE status = 'granted' AND expires_at > now() "
+                "ORDER BY granted_at DESC"
+            )
+            return cur.fetchall()
+
+    def pending_consents(self) -> list[tuple[str]]:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT chat_id FROM chat_consents WHERE status = 'pending' "
+                "ORDER BY updated_at DESC"
+            )
+            return cur.fetchall()
+
+    def declined_consents(self) -> list[tuple[str]]:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT chat_id FROM chat_consents WHERE status = 'declined' "
+                "ORDER BY updated_at DESC"
+            )
+            return cur.fetchall()
+
+    def grant_consent(self, chat_id: str, ttl_hours: int) -> bool:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "UPDATE chat_consents SET status = 'granted', granted_at = now(), "
+                "expires_at = now() + make_interval(hours => %s), updated_at = now() "
+                "WHERE chat_id = %s",
+                (ttl_hours, chat_id),
+            )
+            return cur.rowcount > 0
+
+    def revoke_active_consents(self) -> list[str]:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "UPDATE chat_consents SET status = 'revoked', updated_at = now() "
+                "WHERE status = 'granted' AND expires_at > now() RETURNING chat_id"
+            )
+            return [row[0] for row in cur.fetchall()]
+
+    def revoke_consent(self, chat_id: str) -> str | None:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "UPDATE chat_consents SET status = 'revoked', updated_at = now() "
+                "WHERE chat_id = %s AND status = 'granted' AND expires_at > now() "
+                "RETURNING chat_id",
+                (chat_id,),
+            )
+            row = cur.fetchone()
+            return row[0] if row else None
 
     # -- bot-to-bot loop cap ----------------------------------------------
 

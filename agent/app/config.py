@@ -52,6 +52,9 @@ class AgentConfig:
     followup_window_seconds: int
     reply_to_everything: bool
     allow_private_chats: bool
+    consent_ttl_hours: int
+    consent_pending_timeout_minutes: int
+    operator_jid: str | None
     exclude_eaten_days: int
     exclude_suggested_days: int
     suggestion_history_days: int
@@ -80,6 +83,9 @@ def load_config() -> AgentConfig:
         followup_window_seconds=int(_SETTINGS["trigger"].get("followup_window_seconds", 300)),
         reply_to_everything=_SETTINGS["trigger"].get("reply_to_everything", False),
         allow_private_chats=_SETTINGS.get("allow_private_chats", False),
+        consent_ttl_hours=int(_SETTINGS.get("consent_ttl_hours", 24)),
+        consent_pending_timeout_minutes=int(_SETTINGS.get("consent_pending_timeout_minutes", 15)),
+        operator_jid=_optional("OPERATOR_JID"),
         exclude_eaten_days=int(_SETTINGS["context"].get("exclude_eaten_days", 3)),
         exclude_suggested_days=int(_SETTINGS["context"].get("exclude_suggested_days", 2)),
         suggestion_history_days=int(_SETTINGS["context"].get("suggestion_history_days", 3)),

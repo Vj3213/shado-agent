@@ -4,8 +4,15 @@ from __future__ import annotations
 
 from datetime import date, datetime
 
+import re
+
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
+
+# Exact-match console commands; anything else in the operator DM is conversation.
+_COMMAND_RE = re.compile(
+    r"^(yes|y|agent|no|n|deny|list|stop( .*)?|allow( .*)?)$", re.IGNORECASE
+)
 
 from agent.app.config import load_config
 from agent.app.gemini_client import GeminiClient
@@ -70,6 +77,7 @@ class OutgoingPayload(BaseModel):
 class Decision(BaseModel):
     reply: str | None
     reason: str
+    self_prompt: str | None = None
 
 
 @app.get("/health")
@@ -151,19 +159,107 @@ def _generate_reply_or_none(group_id: str, history: list[MessageRecord], incomin
     return Decision(reply=reply, reason="ok")
 
 
-def _validate_chat(chat_id: str) -> None:
-    """Allowlist: the configured group, plus private chats when enabled."""
+def _chat_access(chat_id: str) -> str:
+    """static (always allowed) | consent (operator must approve) | blocked."""
     if chat_id == config.group_jid:
-        return
-    is_private = not chat_id.endswith("@g.us")
-    if config.allow_private_chats and is_private:
-        return
-    raise HTTPException(status_code=403, detail="chat not allowlisted")
+        return "static"
+    if config.operator_jid and chat_id == config.operator_jid:
+        return "static"  # the operator can always talk to their own agent
+    if chat_id.endswith("@g.us"):
+        return "consent"  # unknown groups: one-time operator approval
+    return "consent" if config.allow_private_chats else "blocked"
+
+
+def _consent_prompt(chat_id: str, text: str) -> str:
+    preview = text.strip().replace("\n", " ")[:80]
+    return (
+        "📩 New chat wants a reply:\n"
+        f"Chat: {chat_id}\n"
+        f"Said: \"{preview}\"\n\n"
+        f"YES → agent handles this chat for {config.consent_ttl_hours}h\n"
+        f"NO → stay silent here\n"
+        f"(reply in this self-chat)"
+    )
+
+
+class ConsolePayload(BaseModel):
+    text: str
+
+
+@app.post("/messages/console", response_model=Decision)
+def handle_console(payload: ConsolePayload) -> Decision:
+    """Operator commands typed in the bot phone's 'Message yourself' chat."""
+    cmd = payload.text.strip().lower()
+    if cmd in ("yes", "y", "agent"):
+        chat = repo.grant_latest_pending(config.consent_ttl_hours)
+        if chat is None:
+            return Decision(reply="No pending chat requests right now.", reason="no_pending")
+        return Decision(
+            reply=f"✅ Agent will reply in {chat} for {config.consent_ttl_hours}h. Send 'stop' to end sooner.",
+            reason="consent_granted",
+        )
+    if cmd in ("no", "n", "deny"):
+        chat = repo.decline_latest_pending()
+        if chat is None:
+            return Decision(reply="No pending chat requests right now.", reason="no_pending")
+        return Decision(reply=f"🚫 Understood — staying silent in {chat}.", reason="consent_declined")
+    if cmd == "list":
+        rows = repo.active_consents()
+        pending = repo.pending_consents()
+        declined = repo.declined_consents()
+        if not rows and not pending and not declined:
+            return Decision(reply="No chats currently auto-handled, nothing pending.", reason="empty")
+        lines = []
+        if rows:
+            lines.append("🟢 Active:")
+            lines += [f"{n}. {chat} (until {expires:%d %b %H:%M})" for n, (chat, expires) in enumerate(rows, 1)]
+        if pending:
+            lines.append("🟡 Awaiting your YES/NO:")
+            lines += [f"• {chat}" for chat, in pending]
+        if declined:
+            lines.append("⛔ Declined (ALLOW <n> to re-activate):")
+            lines += [f"{n}. {chat}" for n, (chat,) in enumerate(declined, 1)]
+        return Decision(reply="\n".join(lines), reason="listed")
+    if cmd.startswith("allow"):
+        arg = cmd[5:].strip()
+        declined = repo.declined_consents()
+        if not arg.isdigit() or not (0 <= int(arg) - 1 < len(declined)):
+            return Decision(reply=f"Usage: ALLOW <n> — send LIST to see declined chats.", reason="help")
+        chat = declined[int(arg) - 1][0]
+        repo.grant_consent(chat, config.consent_ttl_hours)
+        return Decision(
+            reply=f"✅ Agent will reply in {chat} for {config.consent_ttl_hours}h again.",
+            reason="re_allowed",
+        )
+    if cmd == "stop" or cmd.startswith("stop"):
+        arg = cmd[4:].strip()
+        if arg.isdigit():
+            rows = repo.active_consents()
+            idx = int(arg) - 1
+            if 0 <= idx < len(rows):
+                chat = repo.revoke_consent(rows[idx][0])
+                return Decision(reply=f"🛑 Auto-reply stopped for {chat}.", reason="revoked")
+            return Decision(reply=f"No chat number {arg}. Send LIST to see active chats.", reason="bad_index")
+        revoked = repo.revoke_active_consents()
+        if not revoked:
+            return Decision(reply="Nothing to stop — no chats have auto-reply active.", reason="none_active")
+        return Decision(reply="🛑 Auto-reply stopped for:\n" + "\n".join(f"• {c}" for c in revoked), reason="revoked")
+    return Decision(
+        reply="Commands: YES (approve latest request) · NO (decline) · LIST (active chats) · STOP (end auto-reply)",
+        reason="help",
+    )
 
 
 @app.post("/messages/incoming", response_model=Decision)
 def handle_incoming(payload: IncomingPayload) -> Decision:
-    _validate_chat(payload.group_id)
+    # Operator DM is dual-mode: exact commands run the console; anything else
+    # is normal conversation with the agent (the chat is always allowed).
+    if config.operator_jid and payload.sender == config.operator_jid and not payload.group_id.endswith("@g.us"):
+        if _COMMAND_RE.match(payload.text.strip()):
+            decision = handle_console(ConsolePayload(text=payload.text))
+            decision.reason = f"console_{decision.reason}"
+            return decision
+        # fall through: handled as conversation below
 
     # 1. Always record the message so future replies have context.
     repo.add_message(
@@ -175,6 +271,20 @@ def handle_incoming(payload: IncomingPayload) -> Decision:
             created_at=_parse_ts(payload.timestamp),
         )
     )
+
+    # 2. Access: static allowlists first, then operator-granted consent.
+    access = _chat_access(payload.group_id)
+    if access == "blocked":
+        return Decision(reply=None, reason="chat_blocked")
+    if access == "consent" and not repo.has_active_consent(payload.group_id):
+        asked = repo.request_consent(payload.group_id, config.consent_pending_timeout_minutes)
+        if asked:
+            return Decision(
+                reply=None,
+                reason="consent_requested",
+                self_prompt=_consent_prompt(payload.group_id, payload.text),
+            )
+        return Decision(reply=None, reason="no_consent")
 
     # 2. Bot-to-bot path: cap-checked, counted in storage.
     if policy.is_peer_bot(payload.sender):
@@ -230,7 +340,16 @@ def handle_outgoing(payload: OutgoingPayload) -> dict:
             created_at=_parse_ts(payload.timestamp),
         )
     )
-    return {"stored": True}
+    # Operator manually messaged a chat we don't auto-handle: ask once.
+    # (Never consent-gate the operator's own console chat.)
+    result: dict = {"stored": True}
+    if config.operator_jid and payload.group_id == config.operator_jid:
+        return result
+    access = _chat_access(payload.group_id)
+    if access == "consent" and not repo.has_active_consent(payload.group_id):
+        if repo.request_consent(payload.group_id):
+            result["self_prompt"] = _consent_prompt(payload.group_id, payload.text)
+    return result
 
 
 def _parse_ts(raw: str) -> datetime:

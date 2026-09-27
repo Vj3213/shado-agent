@@ -1,11 +1,16 @@
 import type { proto } from "@whiskeysockets/baileys";
+import { jidNormalizedUser } from "@whiskeysockets/baileys";
 import { chatAllowed, config, discoveryMode, settings } from "./config.js";
-import { askAgent, reportOutgoing } from "./agent-client.js";
+import { askAgent, askAgentConsole, reportOutgoing } from "./agent-client.js";
 import { computeReplyDelay, sleep } from "./delay.js";
 import type { IncomingMessage } from "./types.js";
 import type { WASocket } from "@whiskeysockets/baileys";
 
 type WAMessage = proto.IWebMessageInfo;
+
+/** The bot account's own JID, properly normalized (device part stripped). */
+const selfJidOf = (sock: WASocket): string =>
+  sock.user?.id ? jidNormalizedUser(sock.user.id) : "";
 
 const seenChats = new Set<string>();
 
@@ -42,17 +47,32 @@ export async function handleMessagesUpsert(sock: WASocket, upsert: { messages: W
     if (key.fromMe) {
       // Our own relay sends are already recorded — skip them.
       if (key.id && ourSentMessageIds.has(key.id)) continue;
-      // A manual opener typed on the bot's own phone: record it for context
-      // (the model should know this conversation started), but never reply to it.
-      if (!discoveryMode && chatAllowed(jid)) {
+
+      const selfJid = selfJidOf(sock);
+      if (selfJid && jidNormalizedUser(jid) === selfJid) {
+        // Operator console: commands typed in the bot phone's "Message yourself" chat.
+        const cmd = extractText(msg);
+        if (cmd && msg.messageTimestamp && !discoveryMode) {
+          console.log(`[console] ${cmd}`);
+          const d = await askAgentConsole(cmd);
+          if (d?.reply) await sendHumanLike(sock, jid, d.reply);
+        }
+        continue;
+      }
+
+      // A manual opener typed on the bot's own phone: record it for context,
+      // and if it went to a brand-new chat, surface the consent prompt.
+      if (!discoveryMode && !jid.endsWith("@broadcast") && !jid.endsWith("@newsletter")) {
         const manualText = extractText(msg);
         if (manualText && msg.messageTimestamp) {
           console.log(`[recv] (manual from our phone) ${manualText.slice(0, 60)}`);
-          void reportOutgoing({
+          const d = await reportOutgoing({
             group_id: jid,
             text: manualText,
             timestamp: new Date(Number(msg.messageTimestamp) * 1000).toISOString(),
           });
+          const selfJid2 = selfJidOf(sock);
+          if (d?.self_prompt && selfJid2) await sendHumanLike(sock, selfJid2, d.self_prompt);
         }
       }
       continue;
@@ -67,7 +87,11 @@ export async function handleMessagesUpsert(sock: WASocket, upsert: { messages: W
       continue;
     }
 
-    if (!chatAllowed(jid)) continue;
+    // WhatsApp system channels never reach the agent.
+    if (jid.endsWith("@broadcast") || jid.endsWith("@newsletter")) continue;
+
+    // Everything else is forwarded: the agent owns access decisions
+    // (static allowlist + consent-gating for unknown chats).
 
     const text = extractText(msg);
     if (!text || !msg.messageTimestamp) continue;
@@ -81,12 +105,20 @@ export async function handleMessagesUpsert(sock: WASocket, upsert: { messages: W
 
     console.log(`[recv] ${incoming.sender}: ${text.slice(0, 80)}`);
     const decision = await askAgent(incoming);
+    if (decision?.self_prompt) {
+      // Consent prompts go to the operator console: their DM if configured
+      // (reliable transport), else the self-chat (may not decrypt on phones).
+      const consoleTarget = config.operatorJid
+        ? jidNormalizedUser(config.operatorJid)
+        : selfJidOf(sock);
+      if (consoleTarget) await sendHumanLike(sock, consoleTarget, decision.self_prompt);
+    }
     if (!decision?.reply) {
       if (decision) console.log(`[agent] no reply (${decision.reason})`);
       continue;
     }
 
-    await sendHumanLike(sock, jid, decision.reply);
+    await sendHumanLike(sock, jid, decision.reply, text);
   }
 }
 
@@ -94,16 +126,30 @@ export async function handleMessagesUpsert(sock: WASocket, upsert: { messages: W
  * Core send path with human-like behavior: randomized delay scaled to reply
  * length, WhatsApp "composing…" presence, then exactly one message.
  */
-export async function sendHumanLike(sock: WASocket, groupJid: string, text: string): Promise<void> {
-  const delayMs = computeReplyDelay(text, settings.delays);
+export async function sendHumanLike(
+  sock: WASocket,
+  groupJid: string,
+  text: string,
+  incomingText = ""
+): Promise<void> {
+  const delayMs = computeReplyDelay(incomingText, text, settings.delays);
   console.log(`[send] waiting ${delayMs}ms before replying`);
   await sleep(delayMs);
 
   try {
-    await sock.sendPresenceUpdate("composing", groupJid);
-    await sleep(800 + Math.random() * 900); // composing beats before send
+    // Presence is cosmetic — never let it block (or crash) the actual send.
+    try {
+      await sock.sendPresenceUpdate("composing", groupJid);
+      await sleep(800 + Math.random() * 900); // composing beats before send
+    } catch (presenceError) {
+      console.error("[send] presence update failed (continuing):", presenceError);
+    }
     const sent = await sock.sendMessage(groupJid, { text });
-    await sock.sendPresenceUpdate("paused", groupJid);
+    try {
+      await sock.sendPresenceUpdate("paused", groupJid);
+    } catch {
+      /* ignore */
+    }
     if (sent?.key?.id) ourSentMessageIds.add(sent.key.id);
   } catch (error) {
     console.error("[send] failed to send message:", error);
@@ -112,5 +158,7 @@ export async function sendHumanLike(sock: WASocket, groupJid: string, text: stri
 
   const timestamp = new Date().toISOString();
   console.log(`[sent] ${text.slice(0, 80)}`);
+  // Self-chat traffic (operator prompts/replies) isn't conversation context.
+  if (selfJidOf(sock) && jidNormalizedUser(groupJid) === selfJidOf(sock)) return;
   void reportOutgoing({ group_id: groupJid, text, timestamp });
 }
