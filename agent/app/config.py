@@ -55,6 +55,7 @@ class AgentConfig:
     consent_ttl_hours: int
     consent_pending_timeout_minutes: int
     operator_jid: str | None
+    reactions: tuple[str, ...]
     exclude_eaten_days: int
     exclude_suggested_days: int
     suggestion_history_days: int
@@ -86,6 +87,7 @@ def load_config() -> AgentConfig:
         consent_ttl_hours=int(_SETTINGS.get("consent_ttl_hours", 24)),
         consent_pending_timeout_minutes=int(_SETTINGS.get("consent_pending_timeout_minutes", 15)),
         operator_jid=_optional("OPERATOR_JID"),
+        reactions=tuple(_SETTINGS.get("reactions", {}).get("allowed", ["👍", "❤️", "😂", "😮", "😢", "🙏"])),
         exclude_eaten_days=int(_SETTINGS["context"].get("exclude_eaten_days", 3)),
         exclude_suggested_days=int(_SETTINGS["context"].get("exclude_suggested_days", 2)),
         suggestion_history_days=int(_SETTINGS["context"].get("suggestion_history_days", 3)),

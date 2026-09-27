@@ -2,6 +2,10 @@
   "allow_private_chats": true,
   "consent_ttl_hours": 24,
   "consent_pending_timeout_minutes": 15,
+  "reactions": {
+    "allowed": ["👍", "❤️", "😂", "😮", "😢", "🙏"],
+    "cooldown_seconds": 300
+  },
   "trigger": {
     "reply_to_everything": true,
     "prefixes": ["ved:", "@ved"],

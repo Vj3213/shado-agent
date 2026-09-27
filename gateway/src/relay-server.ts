@@ -52,7 +52,7 @@ export function startRelayServer(getSocket: GetSocket): void {
             return;
           }
           console.log(`[relay] send -> ${chatId}`);
-          await sendHumanLike(sock, chatId, text);
+          await sendHumanLike(sock, chatId, text, "", "operator");
           respond(200, { sent: true });
           return;
         }

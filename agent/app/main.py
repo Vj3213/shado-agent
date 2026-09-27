@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from datetime import date, datetime
+from typing import Literal, NamedTuple
 
 import re
 
@@ -72,12 +73,14 @@ class OutgoingPayload(BaseModel):
     group_id: str
     text: str = Field(min_length=1)
     timestamp: str
+    source: Literal["operator", "agent"] = "agent"
 
 
 class Decision(BaseModel):
     reply: str | None
     reason: str
     self_prompt: str | None = None
+    react: str | None = None
 
 
 @app.get("/health")
@@ -116,7 +119,12 @@ def _suggestion_pool(group_id: str, session_text: str) -> list[DishRow]:
     ]
 
 
-def _generate_reply(group_id: str, history: list[MessageRecord], incoming_text: str) -> str | None:
+class _GeneratedReply(NamedTuple):
+    reply: str | None
+    react: str | None
+
+
+def _generate_reply(group_id: str, history: list[MessageRecord], incoming_text: str) -> _GeneratedReply:
     session_text = " ".join(m.text.lower() for m in history) + " " + incoming_text.lower()
     pool = _suggestion_pool(group_id, session_text)
     output = gemini.decide_and_extract(
@@ -130,10 +138,14 @@ def _generate_reply(group_id: str, history: list[MessageRecord], incoming_text: 
         today=date.today(),
         now=datetime.now().astimezone(),
         chat_id=group_id,
+        operator_examples=repo.operator_exemplars(group_id, 10),
     )
     if output.selected_dish:
         if not repo.mark_suggestion_selected(group_id, output.selected_dish):
             print(f"[agent] selection not matched to a suggestion: {output.selected_dish}")
+    react = output.react if output.react in config.reactions else None
+    if output.react and react is None:
+        print(f"[agent] reaction '{output.react}' not in whitelist — dropped")
     if output.suggested_dishes:
         repo.add_suggestions(group_id, output.suggested_dishes)
     if output.meals:
@@ -143,20 +155,20 @@ def _generate_reply(group_id: str, history: list[MessageRecord], incoming_text: 
                 for m in output.meals
             ]
         )
-    return output.reply
+    return _GeneratedReply(reply=output.reply, react=react)
 
 
 def _generate_reply_or_none(group_id: str, history: list[MessageRecord], incoming_text: str) -> Decision:
     """Generate a reply; any model failure becomes a clean no-reply decision
     (the gateway stays silent — never a 500 or a half-sent message)."""
     try:
-        reply = _generate_reply(group_id, history, incoming_text)
+        generated = _generate_reply(group_id, history, incoming_text)
     except Exception as error:
         print(f"[agent] reply generation failed: {error!r}")
         return Decision(reply=None, reason="model_unavailable")
-    if reply is None:
+    if generated.reply is None:
         return Decision(reply=None, reason="model_declined")
-    return Decision(reply=reply, reason="ok")
+    return Decision(reply=generated.reply, reason="ok", react=generated.react)
 
 
 def _chat_access(chat_id: str) -> str:
@@ -337,6 +349,7 @@ def handle_outgoing(payload: OutgoingPayload) -> dict:
             sender="self",
             text=payload.text,
             direction="out",
+            source=payload.source,
             created_at=_parse_ts(payload.timestamp),
         )
     )

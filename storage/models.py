@@ -15,6 +15,7 @@ class MessageRecord:
     text: str
     direction: Direction
     created_at: datetime
+    source: str = "agent"  # 'operator' = written by the human; 'agent' = generated
 
 
 @dataclass(frozen=True)

@@ -37,6 +37,7 @@ class AgentOutput(BaseModel):
     suggested_dishes: list[str]
     selected_dish: str | None
     is_food_related: bool
+    react: str | None = None
 
 
 # Statuses where a different model may still work. Anything else
@@ -86,6 +87,7 @@ class GeminiClient:
         today: date,
         now: datetime,
         chat_id: str = "",
+        operator_examples: list[str] | None = None,
     ) -> AgentOutput:
         if self._dry_run:
             return AgentOutput(
@@ -114,6 +116,7 @@ class GeminiClient:
                         today,
                         now,
                         chat_id,
+                        operator_examples,
                     )
                     if model != self._primary or round_no:
                         print(
@@ -141,6 +144,7 @@ class GeminiClient:
             return self._last_resort.decide_and_extract(
                 history, meals_today, eaten_recent, suggestions, pool,
                 peer_bot_sender, incoming_text, today, now, chat_id,
+                operator_examples,
             )
         assert last_error is not None
         raise last_error
@@ -158,12 +162,14 @@ class GeminiClient:
         today: date,
         now: datetime,
         chat_id: str = "",
+        operator_examples: list[str] | None = None,
     ) -> AgentOutput:
         response = self._client.models.generate_content(
             model=model,
             contents=build_user_prompt(
                 history, meals_today, eaten_recent, suggestions, pool,
                 peer_bot_sender, today, incoming_text, now, chat_id,
+                operator_examples,
             ),
             config=types.GenerateContentConfig(
                 system_instruction=SYSTEM_PROMPT,

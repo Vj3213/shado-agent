@@ -1,5 +1,5 @@
 import { config } from "./config.js";
-import type { AgentDecision, IncomingMessage } from "./types.js";
+import type { AgentDecision, IncomingMessage, OutgoingSource } from "./types.js";
 
 // Headroom for the agent's model-fallback chain: up to 2 rounds × 3 models,
 // each attempt bounded to 15s inside the agent, plus pauses (~111s worst case).
@@ -50,7 +50,9 @@ export async function askAgentConsole(text: string): Promise<AgentDecision | nul
 
 /** Record a message we ourselves sent; returns the agent's decision, which
  * may carry a consent prompt when the operator messaged a brand-new chat. */
-export async function reportOutgoing(msg: Omit<IncomingMessage, "sender">): Promise<AgentDecision | null> {
+export async function reportOutgoing(
+  msg: Omit<IncomingMessage, "sender"> & { source: OutgoingSource }
+): Promise<AgentDecision | null> {
   try {
     const response = await fetch(`${config.agentUrl}/messages/outgoing`, {
       method: "POST",

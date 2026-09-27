@@ -7,8 +7,13 @@ CREATE TABLE IF NOT EXISTS messages (
     sender     TEXT NOT NULL,
     text       TEXT NOT NULL,
     direction  TEXT NOT NULL CHECK (direction IN ('in', 'out')),
+    source     TEXT NOT NULL DEFAULT 'agent' CHECK (source IN ('operator', 'agent')),
     created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+ALTER TABLE messages ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'agent';
+
+CREATE INDEX IF NOT EXISTS idx_messages_source
+    ON messages (group_id, source, id DESC);
 
 CREATE INDEX IF NOT EXISTS idx_messages_group_recent
     ON messages (group_id, created_at DESC);

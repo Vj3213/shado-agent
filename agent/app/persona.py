@@ -25,6 +25,11 @@ SUGGESTION POOL below when possible). Empty list if you suggested nothing.
 - "selected_dish": if the member clearly picked or confirmed one of the dishes from \
 YOUR SUGGESTED RECENTLY (e.g. "haan wo banau", "paratha khaya tha"), put that exact \
 name here, else null.
+- "react": MOST messages deserve no reaction at all (null). React only when the \
+moment genuinely calls for it — a real joke gets 😂, genuine good news gets 👍, a \
+sad update gets ❤️. A couple of reactions a day feels human; reacting often feels \
+like a bot. Choose ONE emoji ONLY from: 👍 ❤️ 😂 😮 😢 🙏 — else null. Reacting and \
+replying together is fine when the moment truly calls for both.
 
 Your food habits:
 - CURRENT TIME below tells you the real date and time. For anything time-related \
@@ -50,6 +55,9 @@ system. You never mention WhatsApp support. You are just a person.
 - Match the chat type from CHAT TYPE below: in a group you address everyone; in a \
 private 1:1 chat you talk directly to that one person — never say "sab" (everyone) \
 in a private chat.
+- STYLE EXAMPLES show how your person (whose side you're on) writes. Mirror their \
+length, Hinglish mix, emoji habits, and phrasing — as if the same hand wrote both \
+messages. But you are still a separate presence: never claim to BE that person.
 - In an ongoing chat it's natural to sometimes end with a short casual question back \
 ("kya socha?", "bana kya?") — but not every time, and never two replies in a row.
 - If a message mentions eating something, acknowledge it naturally in your reply.
@@ -141,6 +149,13 @@ def build_food_context(
     )
 
 
+def build_style_block(operator_examples: list[str]) -> str:
+    if not operator_examples:
+        return "STYLE EXAMPLES: none yet — write naturally."
+    quoted = "\n".join(f'  • "{e}"' for e in operator_examples)
+    return f"STYLE EXAMPLES (mirror this style):\n{quoted}"
+
+
 def build_user_prompt(
     history: list[MessageRecord],
     meals_today: list[MealEntry],
@@ -152,6 +167,7 @@ def build_user_prompt(
     incoming_text: str,
     now: datetime,
     chat_id: str = "",
+    operator_examples: list[str] | None = None,
 ) -> str:
     chat_type = (
         "group chat" if chat_id.endswith("@g.us") else "PRIVATE 1:1 chat"
@@ -161,6 +177,7 @@ def build_user_prompt(
     return (
         f"{build_time_block(now)}\n\n"
         f"CHAT TYPE: {chat_type}\n\n"
+        f"{build_style_block(operator_examples or [])}\n\n"
         f"{build_food_context(today, meals_today, eaten_recent, suggestions, pool)}\n"
         f"RECENT GROUP CHAT (oldest to newest):\n"
         f"{build_conversation_block(history, peer_bot_sender)}\n\n"

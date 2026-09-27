@@ -21,6 +21,12 @@ from storage.models import (
 
 _SCHEMA_PATH = Path(__file__).with_name("schema.sql")
 
+
+class OperatorExemplar:
+    def __init__(self, text: str, created_at: datetime):
+        self.text = text
+        self.created_at = created_at
+
 _INCREMENT_SQL = """
 INSERT INTO bot_loop_state (group_id, peer_sender, consecutive_turns, last_reset_at)
 VALUES (%s, %s, 1, now())
@@ -54,16 +60,16 @@ class PostgresRepository(MealAgentRepository):
     def add_message(self, record: MessageRecord) -> None:
         with self._connect() as conn, conn.cursor() as cur:
             cur.execute(
-                "INSERT INTO messages (group_id, sender, text, direction, created_at) "
-                "VALUES (%s, %s, %s, %s, %s)",
-                (record.group_id, record.sender, record.text, record.direction, record.created_at),
+                "INSERT INTO messages (group_id, sender, text, direction, source, created_at) "
+                "VALUES (%s, %s, %s, %s, %s, %s)",
+                (record.group_id, record.sender, record.text, record.direction, record.source, record.created_at),
             )
 
     def recent_messages(self, group_id: str, limit: int) -> list[MessageRecord]:
         with self._connect() as conn, conn.cursor(row_factory=class_row(MessageRecord)) as cur:
             cur.execute(
-                "SELECT group_id, sender, text, direction, created_at FROM ("
-                "  SELECT group_id, sender, text, direction, created_at, id"
+                "SELECT group_id, sender, text, direction, source, created_at FROM ("
+                "  SELECT group_id, sender, text, direction, source, created_at, id"
                 "  FROM messages WHERE group_id = %s"
                 "  ORDER BY created_at DESC, id DESC LIMIT %s"
                 ") recent ORDER BY created_at ASC, id ASC",
@@ -76,8 +82,8 @@ class PostgresRepository(MealAgentRepository):
     ) -> list[MessageRecord]:
         with self._connect() as conn, conn.cursor(row_factory=class_row(MessageRecord)) as cur:
             cur.execute(
-                "SELECT group_id, sender, text, direction, created_at FROM ("
-                "  SELECT group_id, sender, text, direction, created_at, id"
+                "SELECT group_id, sender, text, direction, source, created_at FROM ("
+                "  SELECT group_id, sender, text, direction, source, created_at, id"
                 "  FROM messages WHERE group_id = %s"
                 "    AND created_at > now() - make_interval(hours => %s)"
                 "  ORDER BY created_at DESC, id DESC LIMIT %s"
@@ -85,6 +91,17 @@ class PostgresRepository(MealAgentRepository):
                 (group_id, hours, limit),
             )
             return cur.fetchall()
+
+    def operator_exemplars(self, group_id: str, limit: int) -> list[str]:
+        """Recent messages the operator personally wrote in this chat (style samples)."""
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "SELECT text FROM messages "
+                "WHERE group_id = %s AND direction = 'out' AND source = 'operator' "
+                "ORDER BY id DESC LIMIT %s",
+                (group_id, limit),
+            )
+            return [row[0] for row in cur.fetchall()]
 
     # -- meal log ---------------------------------------------------------
 

@@ -48,6 +48,10 @@ class MealAgentRepository(Protocol):
         """Session context: messages from the last `hours`, oldest -> newest."""
         ...
 
+    def operator_exemplars(self, group_id: str, limit: int) -> list[str]:
+        """Recent messages the operator personally wrote in this chat (style samples)."""
+        ...
+
     # -- meal log ---------------------------------------------------------
 
     def add_meals(self, entries: list[MealEntry]) -> int: ...

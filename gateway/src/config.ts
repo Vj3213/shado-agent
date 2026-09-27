@@ -19,6 +19,7 @@ export interface DelaySettings {
 export interface Settings {
   allow_private_chats: boolean;
   delays: DelaySettings;
+  reactions: { allowed: string[]; cooldown_seconds: number };
 }
 
 export const settings: Settings = JSON.parse(

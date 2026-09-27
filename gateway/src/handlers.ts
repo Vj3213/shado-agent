@@ -3,7 +3,7 @@ import { jidNormalizedUser } from "@whiskeysockets/baileys";
 import { chatAllowed, config, discoveryMode, settings } from "./config.js";
 import { askAgent, askAgentConsole, reportOutgoing } from "./agent-client.js";
 import { computeReplyDelay, sleep } from "./delay.js";
-import type { IncomingMessage } from "./types.js";
+import type { IncomingMessage, OutgoingSource } from "./types.js";
 import type { WASocket } from "@whiskeysockets/baileys";
 
 type WAMessage = proto.IWebMessageInfo;
@@ -16,6 +16,9 @@ const seenChats = new Set<string>();
 
 /** Ids of messages this process itself sent (already recorded via reportOutgoing). */
 const ourSentMessageIds = new Set<string>();
+
+/** Per-chat reaction cooldown — humans react a few times a day, not per message. */
+const lastReactAt = new Map<string, number>();
 
 /** Best-effort text extraction from the various WhatsApp message shapes. */
 export function extractText(msg: WAMessage): string | null {
@@ -70,6 +73,7 @@ export async function handleMessagesUpsert(sock: WASocket, upsert: { messages: W
             group_id: jid,
             text: manualText,
             timestamp: new Date(Number(msg.messageTimestamp) * 1000).toISOString(),
+            source: "operator",
           });
           const selfJid2 = selfJidOf(sock);
           if (d?.self_prompt && selfJid2) await sendHumanLike(sock, selfJid2, d.self_prompt);
@@ -113,6 +117,25 @@ export async function handleMessagesUpsert(sock: WASocket, upsert: { messages: W
         : selfJidOf(sock);
       if (consoleTarget) await sendHumanLike(sock, consoleTarget, decision.self_prompt);
     }
+    // Instant tap-reaction BEFORE the typed reply — that's the human order:
+    // tap the emoji, then take your time writing. Rate-limited per chat so
+    // even a misbehaving model can't turn reactions into a habit.
+    const nowMs = Date.now();
+    const lastReact = lastReactAt.get(jid) ?? 0;
+    if (decision?.react && key.id && nowMs - lastReact >= settings.reactions.cooldown_seconds * 1000) {
+      try {
+        lastReactAt.set(jid, nowMs);
+        await sleep(300 + Math.random() * 600);
+        await sock.sendMessage(jid, {
+          react: { text: decision.react, key: { remoteJid: jid, fromMe: false, id: key.id, participant: incoming.sender } },
+        });
+        console.log(`[react] ${decision.react} on msg ${key.id.slice(0, 10)}`);
+      } catch (reactError) {
+        console.error("[react] failed:", reactError);
+      }
+    } else if (decision?.react) {
+      console.log("[react] skipped — cooldown active for this chat");
+    }
     if (!decision?.reply) {
       if (decision) console.log(`[agent] no reply (${decision.reason})`);
       continue;
@@ -130,7 +153,8 @@ export async function sendHumanLike(
   sock: WASocket,
   groupJid: string,
   text: string,
-  incomingText = ""
+  incomingText = "",
+  source: OutgoingSource = "agent"
 ): Promise<void> {
   const delayMs = computeReplyDelay(incomingText, text, settings.delays);
   console.log(`[send] waiting ${delayMs}ms before replying`);
@@ -160,5 +184,5 @@ export async function sendHumanLike(
   console.log(`[sent] ${text.slice(0, 80)}`);
   // Self-chat traffic (operator prompts/replies) isn't conversation context.
   if (selfJidOf(sock) && jidNormalizedUser(groupJid) === selfJidOf(sock)) return;
-  void reportOutgoing({ group_id: groupJid, text, timestamp });
+  void reportOutgoing({ group_id: groupJid, text, timestamp, source });
 }

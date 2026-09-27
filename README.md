@@ -171,6 +171,18 @@ restart. Logged out? Delete `gateway/auth/` and link again.
   Sending a manual message from the bot phone to a new chat triggers the same
   consent ask. Consent state lives in `chat_consents` and survives restarts.
   Allowlisted groups/private settings keep their static behavior.
+- **Reactions:** the agent may tap-react on the message it responds to (native
+  WhatsApp set: 👍 ❤️ 😂 😮 😢 🙏, configurable in `config/settings.json`).
+  Structurally safe: the *model* only outputs an emoji, the *gateway* attaches
+  it to the message that triggered the decision — it can never react to a
+  different message. Off-whitelist emojis are dropped.
+- **Shadow mimicry (style mirroring):** every message the operator personally
+  writes from the bot phone (or via `scripts/initiate.py`) is tagged
+  `source='operator'`; the agent fetches the last 10 as `STYLE EXAMPLES` and
+  mirrors their length, Hinglish mix, and emoji habits in replies — same-hand
+  feel, while staying a separate presence (never claims to be the operator).
+  Agent-generated replies are tagged `source='agent'` and never reused as
+  style samples.
 - **Bot-initiated messages:** the gateway runs a tiny local relay
   (`127.0.0.1:GATEWAY_PORT`):
   `.venv/bin/python scripts/initiate.py` (group) or `... initiate.py dm`
