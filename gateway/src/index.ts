@@ -6,7 +6,7 @@ import type { WASocket } from "@whiskeysockets/baileys";
 let sock: WASocket | null = null;
 
 async function main(): Promise<void> {
-  console.log("Starting meal-agent gateway...");
+  console.log("Starting whatsapp-agent gateway...");
 
   sock = await connect({
     onSocketReady: (socket) => {

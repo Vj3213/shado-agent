@@ -1,4 +1,4 @@
-# WhatsApp Meal-Bot Agent
+# WhatsApp Agent
 
 A two-way AI agent that joins an existing private WhatsApp group **as a normal
 linked device** (not a Meta Business bot), chats like a human member, suggests
@@ -48,6 +48,28 @@ Four decoupled modules — none of them reaches past its own boundary:
 Tunables (trigger words, prefixes, delay ranges, context window) live in
 `config/settings.json`; deployment values and secrets live in `.env`. Nothing
 is hardcoded in logic.
+
+## Quickstart
+
+Prerequisites: Node ≥ 20.10, Python 3.10+, a running local Postgres
+(`meal_agent` DB), and a spare WhatsApp number.
+
+```bash
+# 1. clone + install
+git clone <repo-url> && cd whatsapp-agent
+python3 -m venv .venv && .venv/bin/pip install -r agent/requirements.txt
+cd gateway && npm install && cd ..
+
+# 2. configure (never commit this file)
+cp .env.example .env    # then fill: GEMINI_API_KEY, DATABASE_URL
+# leave GROUP_JID=TODO — first run is discovery mode and tells you what to copy
+
+# 3. run everything (Postgres check → schema+seed → agent → gateway)
+bash scripts/run_all.sh
+
+# 4. scan the QR with the spare phone, send a message in the target group,
+#    copy the [discovery] JID into .env, restart — live. Details below.
+```
 
 ## Setup (one-time)
 
@@ -238,6 +260,27 @@ Re-run the HTTP scenario with curl (see `scripts/test_agent_flow.sh`).
 - `git status` → `.env`, `gateway/auth/` never staged.
 - Kill the agent while the gateway runs → gateway logs the HTTP failure and
   stays connected; no crash, no send.
+
+## Security notes
+
+- **Secrets**: `.env` (Gemini/OpenRouter keys, DB URL) and `gateway/auth/`
+  (WhatsApp session) are gitignored — verified never committed. If a key ever
+  leaks: rotate it in Google AI Studio / openrouter.ai and re-link the phone
+  (delete `gateway/auth/`).
+- **Network surface**: both services bind `127.0.0.1` only (agent `:8100`,
+  relay `:8090`). Nothing is reachable from the network. The local endpoints
+  have no auth — acceptable for a personal machine, but anything running under
+  your user can message as the bot; don't run untrusted local code.
+- **SQL**: all queries are parameterized (psycopg placeholders); no string-built SQL.
+- **Prompt injection**: chat members can try to influence the LLM — mitigations
+  are structural (chat allowlist, bot-to-bot loop cap enforced in SQL, human-like
+  rate limits, one-message-per-turn), not prompt promises. The persona can still
+  be social-engineered by someone in the chat; treat it as a known limitation.
+- **Dependencies**: pinned exact; `pip-audit` and `npm audit` clean at time of
+  writing. Re-run both periodically.
+- **Data**: the Postgres DB lives outside the repo; nothing family-related is
+  committed. Logs (message text, JIDs) go to your terminal only — don't paste
+  them into public issues.
 
 ## Learning notes (why it's built this way)
 
