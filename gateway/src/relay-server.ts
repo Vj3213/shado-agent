@@ -17,8 +17,7 @@ export function startRelayServer(getSocket: GetSocket): void {
     const respond = (status: number, body: object) => {
       res.writeHead(status, { "content-type": "application/json" });
       res.end(JSON.stringify(body));
-    };
-    if (req.method !== "POST") {
+    };    if (req.method !== "POST") {
       respond(404, { error: "not found" });
       return;
     }
@@ -73,6 +72,22 @@ export function startRelayServer(getSocket: GetSocket): void {
         respond(500, { error: "send failed" });
       }
     });
+  });
+
+  // A busy relay port must never crash the whole gateway (which owns WhatsApp).
+  server.on("error", (error: NodeJS.ErrnoException) => {
+    if (error.code === "EADDRINUSE") {
+      console.error(
+        `[relay] port ${config.gatewayPort} already in use — another gateway ` +
+        `instance is likely running. Retrying in 10s...`
+      );
+      setTimeout(() => {
+        server.close();
+        server.listen(config.gatewayPort, "127.0.0.1");
+      }, 10_000);
+    } else {
+      console.error("[relay] server error:", error);
+    }
   });
 
   server.listen(config.gatewayPort, "127.0.0.1", () => {

@@ -108,6 +108,11 @@ class MealAgentRepository(Protocol):
 
     def decline_latest_pending(self) -> str | None: ...
 
+    def decline_consent(self, chat_id: str) -> bool:
+        """Decline ONE specific chat (e.g. a NO vote naming the chat). True
+        only if it was pending."""
+        ...
+
     def has_active_consent(self, chat_id: str) -> bool: ...
 
     def active_consents(self) -> list[tuple[str, object]]:
@@ -132,5 +137,15 @@ class MealAgentRepository(Protocol):
 
     def revoke_consent(self, chat_id: str) -> str | None:
         """Revoke one specific chat; returns its id if it was active."""
+        ...
+
+    # -- learned reactions --------------------------------------------------
+
+    def add_learned_reaction(self, emoji: str) -> None:
+        """Record an emoji the operator personally used as a reaction."""
+        ...
+
+    def learned_reactions(self) -> list[str]:
+        """Emojis learned from operator reactions (beyond the static whitelist)."""
         ...
 

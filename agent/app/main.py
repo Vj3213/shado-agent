@@ -11,12 +11,13 @@ from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel, Field
 
 # Exact-match console commands; anything else in the operator DM is conversation.
+# yes/no take an optional chat id (poll votes target a specific chat's ask).
 _COMMAND_RE = re.compile(
-    r"^(yes|y|agent|no|n|deny|list|stop( .*)?|allow( .*)?)$", re.IGNORECASE
+    r"^(yes( .*)?|y|agent|no( .*)?|n|deny|list|stop( .*)?|allow( .*)?)$", re.IGNORECASE
 )
 
 from agent.app.config import load_config
-from agent.app.gemini_client import GeminiClient
+from agent.app.gemini_client import GeminiClient, PollOutput
 from agent.app.openrouter_client import OpenRouterClient
 from agent.app.policy import LoopCapPolicy
 from agent.app.triggers import is_followup, matches_trigger
@@ -76,11 +77,22 @@ class OutgoingPayload(BaseModel):
     source: Literal["operator", "agent"] = "agent"
 
 
+class DeliverPayload(BaseModel):
+    """A message the agent plans for a chat OTHER than the one being answered —
+    the gateway transports it (e.g. the first reply to a just-consented chat)."""
+
+    chat_id: str
+    text: str
+
+
 class Decision(BaseModel):
     reply: str | None
     reason: str
     self_prompt: str | None = None
     react: str | None = None
+    user_would_react: bool = False
+    poll: PollOutput | None = None
+    deliver: DeliverPayload | None = None
 
 
 @app.get("/health")
@@ -122,6 +134,22 @@ def _suggestion_pool(group_id: str, session_text: str) -> list[DishRow]:
 class _GeneratedReply(NamedTuple):
     reply: str | None
     react: str | None
+    user_would_react: bool
+    poll: PollOutput | None
+
+
+def _sanitize_poll(output: AgentOutput) -> PollOutput | None:
+    """Polls are transport-gated: only when enabled, only with a usable
+    question, options clamped to the configured max."""
+    if not config.polls_enabled or output.poll is None:
+        return None
+    poll = output.poll
+    options = [o.strip() for o in poll.options if o.strip()][: config.poll_max_options]
+    question = poll.question.strip()
+    if len(options) < 2 or not question:
+        print("[agent] poll dropped — needs a question and at least 2 options")
+        return None
+    return PollOutput(question=question, options=options)
 
 
 def _generate_reply(group_id: str, history: list[MessageRecord], incoming_text: str) -> _GeneratedReply:
@@ -139,13 +167,15 @@ def _generate_reply(group_id: str, history: list[MessageRecord], incoming_text: 
         now=datetime.now().astimezone(),
         chat_id=group_id,
         operator_examples=repo.operator_exemplars(group_id, 10),
+        allowed_reactions=_allowed_reactions(),
     )
     if output.selected_dish:
         if not repo.mark_suggestion_selected(group_id, output.selected_dish):
             print(f"[agent] selection not matched to a suggestion: {output.selected_dish}")
-    react = output.react if output.react in config.reactions else None
+    allowed = set(_allowed_reactions())
+    react = output.react if output.react in allowed else None
     if output.react and react is None:
-        print(f"[agent] reaction '{output.react}' not in whitelist — dropped")
+        print(f"[agent] reaction '{output.react}' not in allowed set — dropped")
     if output.suggested_dishes:
         repo.add_suggestions(group_id, output.suggested_dishes)
     if output.meals:
@@ -155,7 +185,12 @@ def _generate_reply(group_id: str, history: list[MessageRecord], incoming_text: 
                 for m in output.meals
             ]
         )
-    return _GeneratedReply(reply=output.reply, react=react)
+    return _GeneratedReply(
+        reply=output.reply,
+        react=react,
+        user_would_react=bool(react) and output.user_would_react,
+        poll=_sanitize_poll(output),
+    )
 
 
 def _generate_reply_or_none(group_id: str, history: list[MessageRecord], incoming_text: str) -> Decision:
@@ -168,7 +203,13 @@ def _generate_reply_or_none(group_id: str, history: list[MessageRecord], incomin
         return Decision(reply=None, reason="model_unavailable")
     if generated.reply is None:
         return Decision(reply=None, reason="model_declined")
-    return Decision(reply=generated.reply, reason="ok", react=generated.react)
+    return Decision(
+        reply=generated.reply,
+        reason="ok",
+        react=generated.react,
+        user_would_react=generated.user_would_react,
+        poll=generated.poll,
+    )
 
 
 def _chat_access(chat_id: str) -> str:
@@ -180,6 +221,25 @@ def _chat_access(chat_id: str) -> str:
     if chat_id.endswith("@g.us"):
         return "consent"  # unknown groups: one-time operator approval
     return "consent" if config.allow_private_chats else "blocked"
+
+
+class ReactionPayload(BaseModel):
+    emoji: str = Field(min_length=1, max_length=12)
+
+
+@app.post("/messages/reaction")
+def handle_reaction(payload: ReactionPayload) -> dict:
+    """The operator reacted manually on the bot phone — learn that emoji."""
+    emoji = payload.emoji.strip()
+    repo.add_learned_reaction(emoji)
+    return {"learned": emoji}
+
+
+def _allowed_reactions() -> list[str]:
+    """Emojis the operator actually used FIRST (frequency order) — the model
+    mirrors their vocabulary — then the static configured set."""
+    learned = [e for e in repo.learned_reactions() if e not in config.reactions]
+    return learned + list(config.reactions)
 
 
 def _consent_prompt(chat_id: str, text: str) -> str:
@@ -194,23 +254,57 @@ def _consent_prompt(chat_id: str, text: str) -> str:
     )
 
 
+def _pending_delivery(chat_id: str) -> DeliverPayload | None:
+    """After consent is granted, reply to the message that triggered the ask —
+    otherwise YES would approve silence and the chat would wait for a new
+    message that may never come. Looks back one session window only."""
+    history = repo.recent_messages_since(chat_id, config.session_hours, config.context_window)
+    last_incoming = next((m for m in reversed(history) if m.direction == "in"), None)
+    if last_incoming is None:
+        return None
+    decision = _generate_reply_or_none(chat_id, history, last_incoming.text)
+    if decision.reply:
+        return DeliverPayload(chat_id=chat_id, text=decision.reply)
+    return None
+
+
 class ConsolePayload(BaseModel):
     text: str
 
 
 @app.post("/messages/console", response_model=Decision)
 def handle_console(payload: ConsolePayload) -> Decision:
-    """Operator commands typed in the bot phone's 'Message yourself' chat."""
+    """Operator commands typed in the bot phone's 'Message yourself' chat —
+    or forwarded here as `yes <chat>` / `no <chat>` when the operator taps a
+    consent poll (the gateway knows which chat each poll was about)."""
     cmd = payload.text.strip().lower()
-    if cmd in ("yes", "y", "agent"):
+    if cmd == "yes" or cmd.startswith("yes ") or cmd in ("y", "agent"):
+        arg = cmd[3:].strip()
+        if arg:
+            if repo.grant_consent(arg, config.consent_ttl_hours):
+                return Decision(
+                    reply=f"✅ Agent will reply in {arg} for {config.consent_ttl_hours}h. Send 'stop' to end sooner.",
+                    reason="consent_granted",
+                    deliver=_pending_delivery(arg),
+                )
+            return Decision(
+                reply=f"No pending request for {arg} — nothing to approve.",
+                reason="unknown_chat",
+            )
         chat = repo.grant_latest_pending(config.consent_ttl_hours)
         if chat is None:
             return Decision(reply="No pending chat requests right now.", reason="no_pending")
         return Decision(
             reply=f"✅ Agent will reply in {chat} for {config.consent_ttl_hours}h. Send 'stop' to end sooner.",
             reason="consent_granted",
+            deliver=_pending_delivery(chat),
         )
-    if cmd in ("no", "n", "deny"):
+    if cmd.startswith("no ") or cmd in ("no", "n", "deny"):
+        arg = cmd[2:].strip() if cmd.startswith("no ") else ""
+        if arg:
+            if repo.decline_consent(arg):
+                return Decision(reply=f"🚫 Understood — staying silent in {arg}.", reason="consent_declined")
+            return Decision(reply=f"No pending request for {arg} — nothing to decline.", reason="unknown_chat")
         chat = repo.decline_latest_pending()
         if chat is None:
             return Decision(reply="No pending chat requests right now.", reason="no_pending")
@@ -242,6 +336,7 @@ def handle_console(payload: ConsolePayload) -> Decision:
         return Decision(
             reply=f"✅ Agent will reply in {chat} for {config.consent_ttl_hours}h again.",
             reason="re_allowed",
+            deliver=_pending_delivery(chat),
         )
     if cmd == "stop" or cmd.startswith("stop"):
         arg = cmd[4:].strip()
@@ -353,10 +448,14 @@ def handle_outgoing(payload: OutgoingPayload) -> dict:
             created_at=_parse_ts(payload.timestamp),
         )
     )
-    # Operator manually messaged a chat we don't auto-handle: ask once.
-    # (Never consent-gate the operator's own console chat.)
+    # The operator DM is the console from BOTH phones: a command typed here
+    # (from the bot phone or the operator's phone) runs the console.
     result: dict = {"stored": True}
     if config.operator_jid and payload.group_id == config.operator_jid:
+        if payload.source == "operator" and _COMMAND_RE.match(payload.text.strip()):
+            decision = handle_console(ConsolePayload(text=payload.text))
+            decision.reason = f"console_{decision.reason}"
+            return decision.model_dump()
         return result
     access = _chat_access(payload.group_id)
     if access == "consent" and not repo.has_active_consent(payload.group_id):

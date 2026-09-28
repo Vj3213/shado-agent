@@ -4,7 +4,19 @@
   "consent_pending_timeout_minutes": 15,
   "reactions": {
     "allowed": ["👍", "❤️", "😂", "😮", "😢", "🙏"],
-    "cooldown_seconds": 300
+    "cooldown_seconds": 120
+  },
+  "polls": {
+    "enabled": true,
+    "max_options": 4,
+    "selectable_count": 1,
+    "delay_after_reply_ms": [1200, 3500]
+  },
+  "consent_poll": {
+    "enabled": true,
+    "name": "Reply here?",
+    "options": ["YES", "NO"],
+    "delay_after_prompt_ms": [800, 2000]
   },
   "trigger": {
     "reply_to_everything": true,

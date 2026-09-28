@@ -20,6 +20,16 @@ export interface Settings {
   allow_private_chats: boolean;
   delays: DelaySettings;
   reactions: { allowed: string[]; cooldown_seconds: number };
+  polls?: {
+    selectable_count: number;
+    delay_after_reply_ms: [number, number];
+  };
+  consent_poll?: {
+    enabled: boolean;
+    name: string;
+    options: string[];
+    delay_after_prompt_ms: [number, number];
+  };
 }
 
 export const settings: Settings = JSON.parse(
@@ -40,6 +50,9 @@ export const config = {
   gatewayPort: Number(process.env.GATEWAY_PORT ?? 8090),
   linkPhoneNumber: process.env.LINK_PHONE_NUMBER || undefined,
   operatorJid: process.env.OPERATOR_JID || undefined,
+  /** Plain operator number (no +, no @) — votes encrypt against the voter's
+   * PN format; the chat JID we see is often the LID, which won't decrypt. */
+  operatorPhone: process.env.OPERATOR_PHONE || undefined,
   authDir: path.join(root, "gateway", "auth"),
 };
 

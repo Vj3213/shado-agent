@@ -137,6 +137,26 @@ bash scripts/run_all.sh
 
 Or manually, terminal order matters (Postgres → agent → gateway):
 
+### Run as an always-on service (recommended)
+
+Installs three launchd services that start at boot and auto-restart on crash —
+no terminal needed:
+
+```bash
+bash scripts/service.sh install     # stop manual runs first; then installs + starts
+bash scripts/service.sh status      # health of all three
+bash scripts/service.sh logs        # live logs
+bash scripts/service.sh uninstall   # remove
+```
+
+To keep the bot alive when you're away, prevent system sleep (needs sudo, once):
+
+```bash
+sudo pmset -a sleep 0
+```
+
+## Manual run (three terminals)
+
 ```bash
 # 1. Postgres (if not running)
 LC_ALL="C" /usr/local/opt/postgresql@15/bin/postgres -D /usr/local/var/postgresql@15 &
@@ -164,18 +184,24 @@ restart. Logged out? Delete `gateway/auth/` and link again.
 - **Consent-gated chats (operator console):** unknown chats never get replies
   automatically. First message from a chat that isn't the allowlisted group →
   the bot asks *you* in your own "Message yourself" chat (who asked, what they
-  said) — once, not per message. Reply there: `YES` (agent handles that chat
-  for `consent_ttl_hours`, default 24h) · `NO` (silent forever) · `LIST` ·
-  `STOP` (end all) or `STOP 2` (end one, by LIST number). Multiple chats can
-  be agent-handled at once — each keeps its own conversation context.
+  said) — once, not per message. Every ask also carries a small YES/NO poll:
+  one tap approves or declines *that* chat. Or reply by text: `YES` (agent
+  handles that chat for `consent_ttl_hours`, default 24h) · `NO` (silent
+  forever) · `LIST` · `STOP` (end all) or `STOP 2` (end one, by LIST number).
+  Multiple chats can be agent-handled at once — each keeps its own
+  conversation context.
   Sending a manual message from the bot phone to a new chat triggers the same
   consent ask. Consent state lives in `chat_consents` and survives restarts.
   Allowlisted groups/private settings keep their static behavior.
 - **Reactions:** the agent may tap-react on the message it responds to (native
   WhatsApp set: 👍 ❤️ 😂 😮 😢 🙏, configurable in `config/settings.json`).
-  Structurally safe: the *model* only outputs an emoji, the *gateway* attaches
-  it to the message that triggered the decision — it can never react to a
-  different message. Off-whitelist emojis are dropped.
+  Two-tier policy: reactions that mirror *your own* habits (the model judges
+  you would have reacted) are never rate-limited; the model's own impulses are
+  limited per chat (`reactions.cooldown_seconds`, 120s). Emojis you personally
+  used (learned from your taps) lead the allowed list. Structurally safe: the
+  *model* only outputs an emoji, the *gateway* attaches it to the message that
+  triggered the decision — it can never react to a different message.
+  Off-whitelist emojis are dropped.
 - **Shadow mimicry (style mirroring):** every message the operator personally
   writes from the bot phone (or via `scripts/initiate.py`) is tagged
   `source='operator'`; the agent fetches the last 10 as `STYLE EXAMPLES` and
@@ -249,16 +275,18 @@ restart. Logged out? Delete `gateway/auth/` and link again.
 
 ## End-to-end test plan
 
-### A. Pipeline without WhatsApp (done — all passing)
+### A. Pipeline without WhatsApp (pytest — all passing)
 
 1. `scripts/init_db.py` creates the 3 tables.
 2. Storage: message ordering, meal round-trip, **cap blocks at the limit**,
    human reset works.
-3. Agent (DRY_RUN) over HTTP: prefix → `trigger_prefix` reply; non-trigger →
-   `no_trigger`; peer turns count 1, 2 then `bot_loop_cap_reached`; human
-   message resets and peer can talk again; wrong group → 403.
+3. Agent (DRY_RUN) over HTTP: prefix → trigger reply; peer turns count 1, 2
+   then `bot_loop_cap_reached`; human message resets and peer can talk again;
+   unknown group → consent request (the old hard-403 became the consent flow).
 
-Re-run the HTTP scenario with curl (see `scripts/test_agent_flow.sh`).
+Run the whole suite with `.venv/bin/python -m pytest tests/` (isolated
+`meal_agent_test` database — never touches live data). Gateway logic has
+vitest specs: `cd gateway && npm test`.
 
 ### B. Full stack with WhatsApp
 
@@ -268,11 +296,14 @@ Re-run the HTTP scenario with curl (see `scripts/test_agent_flow.sh`).
 3. Send "good morning" (no trigger) → silence, `[agent] no reply (no_trigger)`.
 4. Send "had poha for breakfast" → reply acknowledges it; check
    `SELECT * FROM meal_log` shows poha/breakfast.
-5. Let the other bot post 3 times → replies 1-2 fire, 3rd is silent with
+5. Send "kya banau aaj?" → short reply + a native WhatsApp poll of dish
+   options (if `config/settings.json` polls.enabled is true). Logs show
+   `[poll] <question> (N options)`.
+6. Let the other bot post 3 times → replies 1-2 fire, 3rd is silent with
    `bot_loop_cap_reached` in agent logs (set `BOT_TO_BOT_MAX_TURNS=2` for a
    quick test).
-6. Post a human message → counter resets (verify next peer reply works).
-7. Switch the agent to the real Gemini key and repeat 2-5 — replies should now
+7. Post a human message → counter resets (verify next peer reply works).
+8. Switch the agent to the real Gemini key and repeat 2-5 — replies should now
    sound like a group member, consider today's meal log, and occasionally
    politely disagree with the other bot's suggestion.
 

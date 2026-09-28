@@ -12,6 +12,14 @@ cd "$(dirname "$0")/.."
 
 export PATH="/usr/local/opt/node-lts/bin:/usr/local/opt/postgresql@15/bin:$PATH"
 
+# If the launchd services are installed, they own the agent — run_all must not
+# fight them (port conflicts + duplicate WhatsApp sessions).
+if launchctl list 2>/dev/null | grep -q com.shado.gateway; then
+  echo "✘ Shado is running as a launchd service."
+  echo "  Use: bash scripts/service.sh status|logs|uninstall"
+  exit 1
+fi
+
 unconfigured() { # name — true if var missing or still the TODO placeholder
   grep -qE "^$1=(TODO)?$" .env 2>/dev/null
 }

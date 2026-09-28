@@ -75,6 +75,13 @@ CREATE TABLE IF NOT EXISTS suggestion (
 );
 CREATE INDEX IF NOT EXISTS idx_suggestion_group ON suggestion (group_id, created_at DESC);
 
+-- Emojis the operator has personally used as reactions — Shado learns these.
+CREATE TABLE IF NOT EXISTS learned_reactions (
+    emoji      TEXT PRIMARY KEY,
+    times      INT NOT NULL DEFAULT 1 CHECK (times >= 1),
+    learned_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
 -- Consent-gated dynamic allowlist, controlled from the operator's self-chat:
 -- pending (asked once) -> granted (TTL) / declined (silent forever)
 --                      -> revoked (re-asks on next message)

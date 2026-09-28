@@ -31,6 +31,11 @@ class ExtractedMeal(BaseModel):
     meal_type: Literal["breakfast", "lunch", "dinner", "snack"]
 
 
+class PollOutput(BaseModel):
+    question: str
+    options: list[str]
+
+
 class AgentOutput(BaseModel):
     reply: str | None
     meals: list[ExtractedMeal]
@@ -38,6 +43,11 @@ class AgentOutput(BaseModel):
     selected_dish: str | None
     is_food_related: bool
     react: str | None = None
+    # True ONLY when the model is confident the user themself would have
+    # tapped a reaction here (mirroring their habits) — such reactions are
+    # never rate-limited; unsure-but-wants-to reactions are.
+    user_would_react: bool = False
+    poll: PollOutput | None = None
 
 
 # Statuses where a different model may still work. Anything else
@@ -88,6 +98,7 @@ class GeminiClient:
         now: datetime,
         chat_id: str = "",
         operator_examples: list[str] | None = None,
+        allowed_reactions: list[str] | None = None,
     ) -> AgentOutput:
         if self._dry_run:
             return AgentOutput(
@@ -117,6 +128,7 @@ class GeminiClient:
                         now,
                         chat_id,
                         operator_examples,
+                        allowed_reactions,
                     )
                     if model != self._primary or round_no:
                         print(
@@ -144,7 +156,7 @@ class GeminiClient:
             return self._last_resort.decide_and_extract(
                 history, meals_today, eaten_recent, suggestions, pool,
                 peer_bot_sender, incoming_text, today, now, chat_id,
-                operator_examples,
+                operator_examples, allowed_reactions,
             )
         assert last_error is not None
         raise last_error
@@ -163,13 +175,14 @@ class GeminiClient:
         now: datetime,
         chat_id: str = "",
         operator_examples: list[str] | None = None,
+        allowed_reactions: list[str] | None = None,
     ) -> AgentOutput:
         response = self._client.models.generate_content(
             model=model,
             contents=build_user_prompt(
                 history, meals_today, eaten_recent, suggestions, pool,
                 peer_bot_sender, today, incoming_text, now, chat_id,
-                operator_examples,
+                operator_examples, allowed_reactions,
             ),
             config=types.GenerateContentConfig(
                 system_instruction=SYSTEM_PROMPT,

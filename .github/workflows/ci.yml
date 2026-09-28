@@ -1,0 +1,38 @@
+# Runs on every push. Keeps the two dependency audits clean (AGENTS.md rule)
+# and typechecks the gateway. Test suites run locally (pytest / npm test) —
+# see AGENTS.md "Conventions".
+name: CI
+
+on: push
+
+jobs:
+  agent-audit:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.10"
+      - name: Install pinned dependencies
+        run: pip install -r agent/requirements.txt -r requirements-dev.txt
+      - name: pip-audit (must stay clean)
+        run: pip-audit
+
+  gateway:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: gateway
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+          cache-dependency-path: gateway/package-lock.json
+      - name: Install pinned dependencies
+        run: npm ci
+      - name: Typecheck
+        run: npm run typecheck
+      - name: npm audit (must stay clean)
+        run: npm audit --audit-level=low

@@ -55,11 +55,12 @@ class OpenRouterClient:
         now: datetime,
         chat_id: str = "",
         operator_examples: list[str] | None = None,
+        allowed_reactions: list[str] | None = None,
     ) -> AgentOutput:
         user_prompt = build_user_prompt(
             history, meals_today, eaten_recent, suggestions, pool,
             peer_bot_sender, today, incoming_text, now, chat_id,
-            operator_examples,
+            operator_examples, allowed_reactions,
         )
         payload = {
             "model": None,  # filled per attempt

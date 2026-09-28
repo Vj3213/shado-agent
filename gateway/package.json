@@ -6,8 +6,10 @@
   "description": "WhatsApp gateway (Baileys) for the agent. Handles connect/receive/send only.",
   "scripts": {
     "dev": "tsx src/index.ts",
-    "build": "tsc",
-    "start": "node dist/index.js"
+    "build": "tsc -p tsconfig.build.json",
+    "start": "node dist/index.js",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
   },
   "dependencies": {
     "@hapi/boom": "10.0.1",
@@ -20,6 +22,8 @@
     "@types/node": "20.14.10",
     "@types/qrcode-terminal": "0.12.2",
     "tsx": "4.23.15",
-    "typescript": "5.5.3"
-  }
+    "typescript": "5.5.3",
+    "vitest": "4.1.11"
+  },
+  "overrides": {}
 }

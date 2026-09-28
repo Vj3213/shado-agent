@@ -48,6 +48,20 @@ export async function askAgentConsole(text: string): Promise<AgentDecision | nul
   }
 }
 
+/** The operator reacted manually on the bot phone — Shado learns that emoji. */
+export async function reportOperatorReaction(emoji: string): Promise<void> {
+  try {
+    await fetch(`${config.agentUrl}/messages/reaction`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ emoji }),
+      signal: AbortSignal.timeout(5_000),
+    });
+  } catch (error) {
+    console.error("[agent-client] failed to report reaction:", error);
+  }
+}
+
 /** Record a message we ourselves sent; returns the agent's decision, which
  * may carry a consent prompt when the operator messaged a brand-new chat. */
 export async function reportOutgoing(

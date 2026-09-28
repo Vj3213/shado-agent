@@ -3,8 +3,10 @@
 *.env
 !.env.example
 
-# --- WhatsApp linked-device session (credentials) ---
+# --- WhatsApp linked-device session (credentials) + backups of it ---
 gateway/auth/
+gateway/auth.old/
+gateway/auth*/
 
 # --- Node ---
 node_modules/

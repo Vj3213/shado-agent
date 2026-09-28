@@ -271,6 +271,15 @@ class PostgresRepository(MealAgentRepository):
             row = cur.fetchone()
             return row[0] if row else None
 
+    def decline_consent(self, chat_id: str) -> bool:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "UPDATE chat_consents SET status = 'declined', updated_at = now() "
+                "WHERE chat_id = %s AND status = 'pending'",
+                (chat_id,),
+            )
+            return cur.rowcount > 0
+
     def has_active_consent(self, chat_id: str) -> bool:
         with self._connect() as conn, conn.cursor() as cur:
             cur.execute(
@@ -333,6 +342,19 @@ class PostgresRepository(MealAgentRepository):
             )
             row = cur.fetchone()
             return row[0] if row else None
+
+    def add_learned_reaction(self, emoji: str) -> None:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute(
+                "INSERT INTO learned_reactions (emoji, times) VALUES (%s, 1) "
+                "ON CONFLICT (emoji) DO UPDATE SET times = learned_reactions.times + 1",
+                (emoji,),
+            )
+
+    def learned_reactions(self) -> list[str]:
+        with self._connect() as conn, conn.cursor() as cur:
+            cur.execute("SELECT emoji FROM learned_reactions ORDER BY times DESC")
+            return [row[0] for row in cur.fetchall()]
 
     # -- bot-to-bot loop cap ----------------------------------------------
 

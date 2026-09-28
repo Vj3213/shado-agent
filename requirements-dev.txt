@@ -1,0 +1,4 @@
+# Dev-only dependencies (tests + security audits). Runtime deps stay in agent/requirements.txt.
+pytest==9.1.1
+httpx==0.28.1
+pip-audit==2.7.3
