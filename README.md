@@ -183,11 +183,23 @@ restart. Logged out? Delete `gateway/auth/` and link again.
   are ignored; own outgoing messages via `fromMe`.
 - **Consent-gated chats (operator console):** unknown chats never get replies
   automatically. First message from a chat that isn't the allowlisted group →
-  the bot asks *you* in your own "Message yourself" chat (who asked, what they
-  said) — once, not per message. Every ask also carries a small YES/NO poll:
-  one tap approves or declines *that* chat. Or reply by text: `YES` (agent
-  handles that chat for `consent_ttl_hours`, default 24h) · `NO` (silent
-  forever) · `LIST` · `STOP` (end all) or `STOP 2` (end one, by LIST number).
+  the bot asks *you* in your own "Message yourself" chat (who they are, what
+  they said) — once, not per message. Every ask also carries a small YES/NO
+  poll: one tap approves or declines *that* chat. Or reply by text — commands
+  are symmetric (`<chat id>` = that chat, `<n>` = LIST number, none = all):
+  `YES` (agent handles that chat for `consent_ttl_hours`, default 24h) · `NO`
+  (silent forever) · `LIST` · `STOP` (end all) or `STOP <id>/<n>` (end one).
+  Approval is **remembered**: the 24h consent expires but re-grants silently,
+  so each chat asks at most once, ever — `STOP` clears the memory so stopping
+  really stops. After approval the agent *decides* whether to acknowledge
+  right away or join from the next message (it can see if you already
+  answered by hand).
+- **Trusted names (zero-first-ask):** `TRUST <name> [chat id]` in your DM
+  pre-approves people without even the first ask: the first sender whose
+  WhatsApp profile name matches (scoped to that chat, if given) is
+  auto-approved for 24h and bound to their number (so a second person with
+  the same name is not — they get the normal ask). You get one notification;
+  `UNTRUST <name>` removes the watch, `STOP <chat id>` undoes a grant.
   Multiple chats can be agent-handled at once — each keeps its own
   conversation context.
   Sending a manual message from the bot phone to a new chat triggers the same

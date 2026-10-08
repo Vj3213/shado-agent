@@ -142,14 +142,51 @@ class TestPersona:
         assert lines[0].startswith("Other meal-suggestion app:")
         assert lines[1].startswith("You (earlier):")
 
+    def test_conversation_block_marks_hand_typed_messages(self):
+        # The model needs to tell "the human already answered this" apart from
+        # the agent's own earlier messages (consent-reply decision).
+        history = [
+            _msg("Hello", "in", datetime.now(timezone.utc)),
+            MessageRecord(
+                group_id="g", sender=HUMAN, text="hello ji", direction="out",  # type: ignore[arg-type]
+                created_at=datetime.now(timezone.utc), source="operator",
+            ),
+        ]
+        lines = build_conversation_block(history, None).splitlines()
+        assert lines[1].startswith("You (earlier, typed by hand):")
+
     def test_food_context_hides_suggestions_when_empty(self):
         ctx = build_food_context(date(2026, 9, 28), [], [], [], [])
         assert "nothing logged yet" in ctx and "none yet" in ctx and "(database empty)" in ctx
 
     def test_style_block_reflects_exemplars(self):
-        assert build_style_block([]) == "STYLE EXAMPLES: none yet — write naturally."
+        assert build_style_block([], hand_typed_in_chat=False) == "STYLE EXAMPLES: none yet — write naturally."
         block = build_style_block(["mast tha yaar"])
         assert '"mast tha yaar"' in block
+
+    def test_style_block_points_at_hand_typed_messages_when_no_exemplars(self):
+        # No out-of-window samples, but the operator's messages are visible in
+        # the conversation — the mirror instruction must survive.
+        block = build_style_block([], hand_typed_in_chat=True)
+        assert "typed by hand" in block and "mirror" in block.lower()
+
+    def test_voice_and_facts_blocks(self):
+        from agent.app.persona import build_facts_block, build_voice_block
+
+        assert build_voice_block(None) == "VOICE PROFILE: none distilled yet — learn from STYLE EXAMPLES."
+        assert "trust it" in build_voice_block("• tone: warm")
+        assert build_facts_block(None) == "FACTS: none extracted yet for this chat."
+        facts_block = build_facts_block(["Priya exam Oct 12"])
+        assert "Priya exam Oct 12" in facts_block and "treat as true" in facts_block
+
+    def test_context_block_anchors_note_pronouns_to_the_persona(self):
+        from agent.app.persona import build_context_block
+
+        block = build_context_block(["its my birthday today"])
+        # The model must read note pronouns as the REPLOYING persona's own life,
+        # never as the chat partner's (the "tera birthday" misfire).
+        assert '"I/my/mera/mere"' in block and "YOU" in block
+        assert "birthday" in block  # the worked example is pinned 
 
     def test_prompt_sections_present(self):
         now = datetime(2026, 9, 28, 9, 0, tzinfo=timezone.utc)

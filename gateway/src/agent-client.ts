@@ -48,13 +48,44 @@ export async function askAgentConsole(text: string): Promise<AgentDecision | nul
   }
 }
 
-/** The operator reacted manually on the bot phone — Shado learns that emoji. */
-export async function reportOperatorReaction(emoji: string): Promise<void> {
+/** Ask the agent to see a media message (image/sticker/gif frame) and decide. */
+export async function askAgentMedia(payload: {
+  group_id: string;
+  sender: string;
+  sender_name?: string | null;
+  sender_number?: string | null;
+  caption?: string | null;
+  kind: string;
+  mimetype: string;
+  media_base64: string;
+  timestamp: string;
+}): Promise<AgentDecision | null> {
+  try {
+    const response = await fetch(`${config.agentUrl}/messages/media`, {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify(payload),
+      signal: AbortSignal.timeout(INCOMING_TIMEOUT_MS),
+    });
+    if (!response.ok) {
+      console.error(`[agent-client] media returned HTTP ${response.status}`);
+      return null;
+    }
+    return (await response.json()) as AgentDecision;
+  } catch (error) {
+    console.error("[agent-client] media call failed:", error);
+    return null;
+  }
+}
+
+/** The operator reacted manually — Shado learns that emoji, and when we know
+ * the chat it was made in, how the operator reacts in THAT chat. */
+export async function reportOperatorReaction(emoji: string, chatId?: string): Promise<void> {
   try {
     await fetch(`${config.agentUrl}/messages/reaction`, {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({ emoji }),
+      body: JSON.stringify({ emoji, chat_id: chatId ?? null }),
       signal: AbortSignal.timeout(5_000),
     });
   } catch (error) {

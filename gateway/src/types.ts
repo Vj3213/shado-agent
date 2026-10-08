@@ -7,6 +7,10 @@ export interface IncomingMessage {
   text: string;
   /** ISO-8601 timestamp taken from the WhatsApp message. */
   timestamp: string;
+  /** Sender's self-declared WhatsApp display name (may be missing). */
+  sender_name?: string | null;
+  /** Sender's phone number digits, when resolvable (group metadata bridge). */
+  sender_number?: string | null;
 }
 
 /** Who authored an outgoing message — operator style samples vs agent output. */

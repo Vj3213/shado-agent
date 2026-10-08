@@ -158,6 +158,38 @@ class TestDryRun:
         )
         assert confident.user_would_react is True and confident.react == "😂"
 
+    def test_needs_context_defaults_to_false(self):
+        # Models that omit the field stay valid — pause only when declared.
+        assert _output().needs_context is False
+
+
+class TestDistiller:
+    """The profiler agent (#2): VOICE + FACTS from message history."""
+
+    def test_dry_run_returns_canned_profile_without_sdk(self):
+        client = GeminiClient(api_key="", primary_model="x", fallback_models=[], dry_run=True)
+        out = client.distill(["hello"], ["chat line"])
+        assert out.facts and "[dry-run]" in out.facts[0]
+        assert out.voice.length is not None
+        assert not hasattr(client, "_client")
+
+    def test_distill_calls_the_primary_model_with_both_inputs(self, monkeypatch):
+        from agent.app.gemini_client import DistillOutput, DistilledVoice
+
+        client = _client(last_resort=None)
+        seen: dict = {}
+        canned = DistillOutput(voice=DistilledVoice(tone="teasing"), facts=["trip next week"])
+
+        def fake(model, samples, lines):
+            seen["model"], seen["samples"], seen["lines"] = model, samples, lines
+            return canned
+
+        monkeypatch.setattr(client, "_call_distill", fake)
+        out = client.distill(["ved: khana"], ["you: poha khao"])
+        assert out is canned
+        assert seen["model"] == "gemini-3.5-flash-lite"
+        assert seen["samples"] == ["ved: khana"] and seen["lines"] == ["you: poha khao"]
+
 
 # The layered-signature trap (AGENTS.md): persona, GeminiClient, OpenRouterClient
 # and the shared prompt must all agree on the same parameter bundle. This test
@@ -183,13 +215,15 @@ def test_layered_signatures_stay_in_sync():
     # today/incoming_text differently today, so compare as sets and pin the
     # per-layer orders explicitly (any edit to one layer breaks these).
     assert set(gem) == set(prompt), "prompt layer is missing a shared parameter"
-    assert gem[:12] == [
+    assert gem[:16] == [
         "history", "meals_today", "eaten_recent", "suggestions", "pool",
         "peer_bot_sender", "incoming_text", "today", "now", "chat_id",
-        "operator_examples", "allowed_reactions",
+        "operator_examples", "allowed_reactions", "chat_reactions", "chat_context",
+        "voice_profile", "facts",
     ]
-    assert prompt[:12] == [
+    assert prompt[:16] == [
         "history", "meals_today", "eaten_recent", "suggestions", "pool",
         "peer_bot_sender", "today", "incoming_text", "now", "chat_id",
-        "operator_examples", "allowed_reactions",
+        "operator_examples", "allowed_reactions", "chat_reactions", "chat_context",
+        "voice_profile", "facts",
     ]

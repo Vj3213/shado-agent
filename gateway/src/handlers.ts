@@ -1,10 +1,12 @@
-import type { proto } from "@whiskeysockets/baileys";
+import type { proto, WAMessageKey } from "@whiskeysockets/baileys";
 import { jidNormalizedUser } from "@whiskeysockets/baileys";
 import { chatAllowed, config, discoveryMode, settings } from "./config.js";
-import { askAgent, askAgentConsole, reportOperatorReaction, reportOutgoing } from "./agent-client.js";
+import { askAgent, askAgentConsole, askAgentMedia, reportOperatorReaction, reportOutgoing } from "./agent-client.js";
 import { computeReplyDelay, sleep } from "./delay.js";
+import { detectMedia, resolveMediaBytes } from "./media.js";
 import { buildPollMessage, pollDelayMs, pollRecordText } from "./poll.js";
 import { reactionAllowed } from "./reaction.js";
+import { senderInfo } from "./group-meta.js";
 import {
   consentPollDelayMs,
   consentPollSpec,
@@ -20,6 +22,18 @@ type WAMessage = proto.IWebMessageInfo;
 /** The bot account's own JID, properly normalized (device part stripped). */
 const selfJidOf = (sock: WASocket): string =>
   sock.user?.id ? jidNormalizedUser(sock.user.id) : "";
+
+/**
+ * The self-chat ("Message yourself") is the operator console. WhatsApp may
+ * key it in either the PN form (…@s.whatsapp.net) or the LID form (…@lid) —
+ * compare against both, else console commands silently become plain messages.
+ */
+export function isSelfChat(jid: string, sock: WASocket): boolean {
+  const normalized = jidNormalizedUser(jid);
+  const pn = sock.user?.id ? jidNormalizedUser(sock.user.id) : "";
+  const lid = sock.user?.lid ? jidNormalizedUser(sock.user.lid) : "";
+  return (pn !== "" && normalized === pn) || (lid !== "" && normalized === lid);
+}
 
 const seenChats = new Set<string>();
 
@@ -50,14 +64,27 @@ export async function handleMessagesUpsert(sock: WASocket, upsert: { messages: W
   if (upsert.type !== "notify") return;
 
   for (const msg of upsert.messages) {
+    try {
+      await processOneMessage(sock, upsert, msg);
+    } catch (error) {
+      console.error("[recv] message processing failed (skipped):", error);
+    }
+  }
+}
+
+async function processOneMessage(
+  sock: WASocket,
+  upsert: { messages: proto.IWebMessageInfo[]; type: string },
+  msg: proto.IWebMessageInfo
+): Promise<void> {
     const key = msg.key;
-    if (!key.remoteJid) continue;
+    if (!key.remoteJid) return;
 
     // Consent-poll votes arrive as encrypted pollUpdateMessage entries —
     // resolve them to a console command before any other handling.
     if (msg.message?.pollUpdateMessage) {
       await handleConsentVote(sock, msg);
-      continue;
+      return;
     }
 
     const jid = key.remoteJid;
@@ -65,28 +92,28 @@ export async function handleMessagesUpsert(sock: WASocket, upsert: { messages: W
 
     if (key.fromMe) {
       // Our own relay sends are already recorded — skip them.
-      if (key.id && ourSentMessageIds.has(key.id)) continue;
+      if (key.id && ourSentMessageIds.has(key.id)) return;
 
-      // Operator's manual reactions: teach Shado new emojis.
+      // Operator's manual reactions: teach Shado new emojis — in the chat
+      // they were made, so it can mirror the operator's per-chat habits.
       const operatorReact = msg.message?.reactionMessage?.text;
       if (operatorReact && !discoveryMode) {
-        console.log(`[react-learn] operator reacted with ${operatorReact}`);
-        void reportOperatorReaction(operatorReact);
-        continue;
+        console.log(`[react-learn] operator reacted with ${operatorReact} in ${jid}`);
+        void reportOperatorReaction(operatorReact, jid);
+        return;
       }
 
-        const selfJid = selfJidOf(sock);
-        if (selfJid && jidNormalizedUser(jid) === selfJid) {
-          // Operator console: commands typed in the bot phone's "Message yourself" chat.
-          const cmd = extractText(msg);
-          if (cmd && msg.messageTimestamp && !discoveryMode) {
-            console.log(`[console] ${cmd}`);
-            const d = await askAgentConsole(cmd);
-            if (d?.reply) await sendHumanLike(sock, jid, d.reply);
-            await deliverIfAny(sock, d);
-          }
-          continue;
+      if (isSelfChat(jid, sock)) {
+        // Operator console: commands typed in the bot phone's "Message yourself" chat.
+        const cmd = extractText(msg);
+        if (cmd && msg.messageTimestamp && !discoveryMode) {
+          console.log(`[console] ${cmd}`);
+          const d = await askAgentConsole(cmd);
+          if (d?.reply) await sendHumanLike(sock, jid, d.reply);
+          await deliverIfAny(sock, d);
         }
+        return;
+      }
 
       // A manual opener typed on the bot's own phone: record it for context,
       // and if it went to a brand-new chat, surface the consent prompt.
@@ -113,7 +140,7 @@ export async function handleMessagesUpsert(sock: WASocket, upsert: { messages: W
           }
         }
       }
-      continue;
+      return;
     }
 
     if (discoveryMode) {
@@ -122,66 +149,147 @@ export async function handleMessagesUpsert(sock: WASocket, upsert: { messages: W
         seenChats.add(jid);
         console.log(`[discovery] ${isGroup ? "group" : "chat"} seen: ${jid}`);
       }
-      continue;
+      return;
     }
 
     // WhatsApp system channels never reach the agent.
-    if (jid.endsWith("@broadcast") || jid.endsWith("@newsletter")) continue;
+    if (jid.endsWith("@broadcast") || jid.endsWith("@newsletter")) return;
+
+    // Reactions the OPERATOR taps from their personal phone (in their DM with
+    // the bot) are operator vocabulary too — group reactions by others are not.
+    const incomingReact = msg.message?.reactionMessage?.text;
+    if (incomingReact && config.operatorJid && jidNormalizedUser(jid) === jidNormalizedUser(config.operatorJid)) {
+      console.log(`[react-learn] operator reacted ${incomingReact} (their phone)`);
+      void reportOperatorReaction(incomingReact, jid);
+      return;
+    }
 
     // Everything else is forwarded: the agent owns access decisions
     // (static allowlist + consent-gating for unknown chats).
 
+    if (!msg.messageTimestamp) return;
+
+    // Media first: a caption-less image/sticker/GIF must still reach the agent.
+    const detected = detectMedia(msg);
+    const media = detected ? await resolveMediaBytes(msg, sock, detected) : null;
+
     const text = extractText(msg);
-    if (!text || !msg.messageTimestamp) continue;
+    if (!text && !media) return;
+
+    // Group members resolve through metadata: the operator's SAVED name and
+    // the sender's real phone number (the PN↔LID bridge for number trust).
+    let senderName: string | null = msg.pushName || null;
+    let senderNumber: string | null = null;
+    if (isGroup) {
+      const info = await senderInfo(sock, jid, (key.participant ?? jid));
+      if (info) {
+        senderName = info.savedName ?? info.notifyName ?? senderName;
+        senderNumber = info.number;
+      }
+    }
 
     const incoming: IncomingMessage = {
       group_id: jid,
       sender: isGroup ? (key.participant ?? jid) : jid,
-      text,
+      text: text ?? `[${media!.kind}]`,
       timestamp: new Date(Number(msg.messageTimestamp) * 1000).toISOString(),
+      sender_name: senderName,
+      sender_number: senderNumber,
     };
 
-    console.log(`[recv] ${incoming.sender}: ${text.slice(0, 80)}`);
-    const decision = await askAgent(incoming);
-    if (decision?.self_prompt) {
-      // Consent prompts go to the operator console: their DM if configured
-      // (reliable transport), else the self-chat (may not decrypt on phones).
-      const consoleTarget = config.operatorJid
-        ? jidNormalizedUser(config.operatorJid)
-        : selfJidOf(sock);
-      if (consoleTarget) {
-        await sendHumanLike(sock, consoleTarget, decision.self_prompt);
-        await sendConsentPoll(sock, consoleTarget, jid);
-      }
-    }
-    // Instant tap-reaction BEFORE the typed reply — that's the human order:
-    // tap the emoji, then take your time writing. Rate-limited per chat ONLY
-    // for the model's own impulses — reactions mirroring the user's hand
-    // (user_would_react) are never rate-limited.
-    const nowMs = Date.now();
-    if (key.id && reactionAllowed(decision, lastReactAt.get(jid) ?? 0, nowMs, settings.reactions.cooldown_seconds)) {
-      try {
-        lastReactAt.set(jid, nowMs);
-        await sleep(300 + Math.random() * 600);
-        await sock.sendMessage(jid, {
-          react: { text: decision!.react!, key: { remoteJid: jid, fromMe: false, id: key.id, participant: incoming.sender } },
-        });
-        console.log(`[react] ${decision!.react}${decision!.user_would_react ? " (mirroring user)" : ""} on msg ${key.id.slice(0, 10)}`);
-      } catch (reactError) {
-        console.error("[react] failed:", reactError);
-      }
-    } else if (decision?.react) {
-      console.log("[react] skipped — cooldown active for this chat");
-    }
-    if (!decision?.reply) {
-      if (decision) console.log(`[agent] no reply (${decision.reason})`);
-      continue;
+    if (media) {
+      console.log(`[recv-media] ${incoming.sender}: ${media.kind}${media.caption ? " +caption" : ""}`);
+      const decision = await askAgentMedia({
+        group_id: incoming.group_id,
+        sender: incoming.sender,
+        sender_name: senderName,
+        sender_number: senderNumber,
+        caption: media.caption,
+        kind: media.kind,
+        mimetype: media.mimetype,
+        media_base64: media.base64,
+        timestamp: incoming.timestamp,
+      });
+      await actOnDecision(sock, jid, key, incoming, decision, text ?? "");
+      return;
     }
 
-    await sendHumanLike(sock, jid, decision.reply, text);
-    await sendPollIfAny(sock, jid, decision);
-    await deliverIfAny(sock, decision);
+    console.log(`[recv] ${incoming.sender}: ${text!.slice(0, 80)}`);
+    const decision = await askAgent(incoming);
+    await actOnDecision(sock, jid, key, incoming, decision, text!);
+}
+
+/** Shared reaction/reply/poll/deliver handling for BOTH the text and media
+ * paths — one code path, one set of safety rails. */
+async function actOnDecision(
+  sock: WASocket,
+  jid: string,
+  key: proto.IMessageKey,
+  incoming: IncomingMessage,
+  decision: AgentDecision | null,
+  incomingText: string
+): Promise<void> {
+  if (decision?.self_prompt) {
+    // Consent prompts go to the operator console: their DM if configured
+    // (reliable transport), else the self-chat (may not decrypt on phones).
+    const consoleTarget = config.operatorJid
+      ? jidNormalizedUser(config.operatorJid)
+      : selfJidOf(sock);
+    if (consoleTarget) {
+      await sendHumanLike(sock, consoleTarget, decision.self_prompt);
+      await sendConsentPoll(sock, consoleTarget, jid);
+    }
   }
+  // Blue tick the moment we ENGAGE (reply or react) — that's the human order:
+  // read it, then act. Ignored messages stay unticked (humans don't read
+  // every group message instantly either). Needs "Read receipts" ON in the
+  // phone's WhatsApp privacy settings to reach others as blue ticks.
+  if (
+    settings.read_receipts?.enabled !== false &&
+    key.id &&
+    key.remoteJid &&
+    decision &&
+    (decision.reply || decision.react)
+  ) {
+    try {
+      await sock.readMessages([
+        { ...key, remoteJid: key.remoteJid, fromMe: false } as WAMessageKey,
+      ]);
+      console.log(`[read] marked read (msg ${key.id.slice(0, 10)})`);
+    } catch (readError) {
+      console.error("[read] receipt failed:", readError);
+    }
+  }
+  // Instant tap-reaction BEFORE the typed reply — that's the human order:
+  // tap the emoji, then take your time writing. Rate-limited per chat ONLY
+  // for the model's own impulses — reactions mirroring the user's hand
+  // (user_would_react) are never rate-limited.
+  const nowMs = Date.now();
+  if (key.id && reactionAllowed(decision, lastReactAt.get(jid) ?? 0, nowMs, settings.reactions.cooldown_seconds)) {
+    try {
+      lastReactAt.set(jid, nowMs);
+      await sleep(300 + Math.random() * 600);
+      const reactSent = await sock.sendMessage(jid, {
+        react: { text: decision!.react!, key: { remoteJid: jid, fromMe: false, id: key.id, participant: incoming.sender } },
+      });
+      // Track our own reaction echo, or the agent would "learn" its own
+      // reactions as operator vocabulary (self-reinforcing loop).
+      if (reactSent?.key?.id) ourSentMessageIds.add(reactSent.key.id);
+      console.log(`[react] ${decision!.react}${decision!.user_would_react ? " (mirroring user)" : ""} on msg ${key.id.slice(0, 10)}`);
+    } catch (reactError) {
+      console.error("[react] failed:", reactError);
+    }
+  } else if (decision?.react) {
+    console.log("[react] skipped — cooldown active for this chat");
+  }
+  if (!decision?.reply) {
+    if (decision) console.log(`[agent] no reply (${decision.reason})`);
+    return;
+  }
+
+  await sendHumanLike(sock, jid, decision.reply, incomingText);
+  await sendPollIfAny(sock, jid, decision);
+  await deliverIfAny(sock, decision);
 }
 
 /**
@@ -307,6 +415,6 @@ export async function sendHumanLike(
   const timestamp = new Date().toISOString();
   console.log(`[sent] ${text.slice(0, 80)}`);
   // Self-chat traffic (operator prompts/replies) isn't conversation context.
-  if (selfJidOf(sock) && jidNormalizedUser(groupJid) === selfJidOf(sock)) return;
+  if (isSelfChat(groupJid, sock)) return;
   void reportOutgoing({ group_id: groupJid, text, timestamp, source });
 }

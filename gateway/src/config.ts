@@ -30,6 +30,18 @@ export interface Settings {
     options: string[];
     delay_after_prompt_ms: [number, number];
   };
+  group_metadata?: {
+    cache_minutes: number;
+  };
+  media?: {
+    reply_to_media: boolean;
+    max_mb: number;
+    download_timeout_seconds: number;
+    allowed_mimetypes: string[];
+  };
+  read_receipts?: {
+    enabled: boolean;
+  };
 }
 
 export const settings: Settings = JSON.parse(

@@ -58,6 +58,20 @@ class AgentConfig:
     reactions: tuple[str, ...]
     polls_enabled: bool
     poll_max_options: int
+    context_note_ttl_days: int
+    context_max_notes: int
+    context_ask_cooldown_hours: int
+    context_resume_min_gap_minutes: int
+    distiller_operator_msgs_per_run: int
+    distiller_min_gap_hours: int
+    distiller_facts_ttl_days: int
+    distiller_facts_in_prompt: int
+    distiller_voice_samples: int
+    distiller_fact_window_messages: int
+    distiller_poll_seconds: int
+    media_reply_to_media: bool
+    media_max_mb: int
+    media_allowed_mimetypes: tuple[str, ...]
     exclude_eaten_days: int
     exclude_suggested_days: int
     suggestion_history_days: int
@@ -92,6 +106,20 @@ def load_config() -> AgentConfig:
         reactions=tuple(_SETTINGS.get("reactions", {}).get("allowed", ["👍", "❤️", "😂", "😮", "😢", "🙏"])),
         polls_enabled=bool(_SETTINGS.get("polls", {}).get("enabled", False)),
         poll_max_options=int(_SETTINGS.get("polls", {}).get("max_options", 4)),
+        context_note_ttl_days=int(_SETTINGS.get("context_notes", {}).get("default_ttl_days", 7)),
+        context_max_notes=int(_SETTINGS.get("context_notes", {}).get("max_notes", 5)),
+        context_ask_cooldown_hours=int(_SETTINGS.get("context_notes", {}).get("ask_cooldown_hours", 12)),
+        context_resume_min_gap_minutes=int(_SETTINGS.get("context_notes", {}).get("resume_min_gap_minutes", 3)),
+        distiller_operator_msgs_per_run=int(_SETTINGS.get("distiller", {}).get("operator_msgs_per_run", 100)),
+        distiller_min_gap_hours=int(_SETTINGS.get("distiller", {}).get("min_gap_hours", 6)),
+        distiller_facts_ttl_days=int(_SETTINGS.get("distiller", {}).get("facts_ttl_days", 30)),
+        distiller_facts_in_prompt=int(_SETTINGS.get("distiller", {}).get("facts_in_prompt", 5)),
+        distiller_voice_samples=int(_SETTINGS.get("distiller", {}).get("voice_samples", 100)),
+        distiller_fact_window_messages=int(_SETTINGS.get("distiller", {}).get("fact_window_messages", 100)),
+        distiller_poll_seconds=int(_SETTINGS.get("distiller", {}).get("poll_seconds", 300)),
+        media_reply_to_media=bool(_SETTINGS.get("media", {}).get("reply_to_media", True)),
+        media_max_mb=int(_SETTINGS.get("media", {}).get("max_mb", 10)),
+        media_allowed_mimetypes=tuple(_SETTINGS.get("media", {}).get("allowed_mimetypes", ["image/jpeg", "image/png", "image/webp"])),
         exclude_eaten_days=int(_SETTINGS["context"].get("exclude_eaten_days", 3)),
         exclude_suggested_days=int(_SETTINGS["context"].get("exclude_suggested_days", 2)),
         suggestion_history_days=int(_SETTINGS["context"].get("suggestion_history_days", 3)),

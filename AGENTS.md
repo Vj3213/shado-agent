@@ -24,7 +24,8 @@ not just code. No God-files, no hardcoded tunables, minimal comments.
 
 Gateway ↔ agent talk over local HTTP only: `POST /messages/incoming`,
 `/messages/outgoing`, `/messages/initiate`, `/messages/console`,
-`/messages/reaction`, `GET /health`. Agent binds 127.0.0.1:8100; relay binds 127.0.0.1:8090.
+`/messages/reaction`, `/messages/media`, `GET /health`. Agent binds 127.0.0.1:8100;
+relay binds 127.0.0.1:8090.
 
 ## Data model (Postgres, database `meal_agent`)
 
@@ -40,6 +41,14 @@ Gateway ↔ agent talk over local HTTP only: `POST /messages/incoming`,
   consent-gated dynamic allowlist; pending asks timeout (re-ask), declined = silent
   forever unless `ALLOW <n>`
 - `learned_reactions(emoji, times)` — emojis the operator used manually
+- `chat_reactions(chat_id, emoji, times)` — same, per chat (mirroring material)
+- `contacts(jid, name)` — sender display names (WhatsApp pushName) for readable
+  consent prompts and LIST output
+- `trusted_names(name, number, scope, bound_jid, bound_chat)` — zero-first-ask
+  allowlist (see Trusted entries below)
+- `chat_context(chat_id, note, expires_at)` — operator-curated per-chat notes
+  ("REMEMBER"); expired = ignored, pruned by the retention sweep
+- `context_asks(chat_id, last_ask_at)` — ask-for-context rate limiting
 
 ## Running
 
@@ -51,27 +60,77 @@ bash scripts/service.sh install|status|logs|restart|uninstall   # launchd (3 ser
 - If launchd services are loaded, `run_all.sh` refuses to run — that's correct.
 - `sudo pmset -a sleep 0` was needed once so the Mac never system-sleeps.
 - Logs: `~/Library/Logs/shado/*.log`. Console noise from libsignal is filtered in `gateway/src/index.ts`.
+- **Gateway single-instance rule**: only ONE process may ever touch `gateway/auth/`.
+  Two instances → WhatsApp `440 connectionReplaced` war (endless reconnects).
+  Before ANY gateway start: `pkill -f "tsx src/index.ts"` and verify zero remain.
+- **Recovery runbook** (symptom → action):
+  - `Connection closed (401). Logged out` → server evicted the session: archive
+    `gateway/auth/` and re-link (pairing code via `LINK_PHONE_NUMBER` in .env, or QR
+    with it empty). Nothing else is lost — DB state survives.
+  - Connected but NO `[recv]` lines for minutes (zombie socket) →
+    `launchctl kickstart -k gui/$(id -u)/com.shado.gateway` (fresh connect).
+  - `440` reconnect loop → kill ALL gateway processes, keep exactly one.
 
 ## Key behaviors (all structural, not prompt-promises)
 
 - **Consent**: unknown chats never get replies until the operator says `YES`
   in their DM (`OPERATOR_JID` = the console). `NO` = permanent silence, `ALLOW <n>` revives.
-  A YES/ALLOW also REPLIES to the message that triggered the ask: the agent
-  generates a reply from the chat's recent history and returns it as
-  `Decision.deliver {chat_id, text}`; the gateway sends it human-like. (Older
-  than one session window → nothing pending → no deliver.)
+  Consent is STICKY: every grant sets `remembered` — on expiry the chat is
+  **silently re-granted** with a fresh TTL (the ask fires at most once per
+  chat, ever). Every STOP path (`STOP <id>`, bare `STOP`, LIST-number stop)
+  clears `remembered`, so a stop really stops; the next message re-asks.
+  Decline never re-asks, as before.
+  A YES/ALLOW also REPLIES to the message that triggered the ask — but the
+  MODEL decides whether to speak now: it receives `__CONSENT_GRANTED__` as the
+  incoming text plus the chat's history (hand-typed operator messages are
+  labeled "typed by hand") and may reply null to join from the next message
+  instead. What it does decide is returned as `Decision.deliver
+  {chat_id, text}`; the gateway sends it human-like. (Older than one session
+  window → nothing pending → no deliver.)
+- **Consent commands** are symmetric: `yes`/`no`/`stop` each take an optional
+  argument — a chat id (`stop 120363...@g.us`) or a LIST number (`stop 2`) —
+  and no argument means ALL (stop) / LATEST pending (yes/no).
 - **Consent polls**: the gateway attaches a YES/NO poll after every consent
   prompt; a tap is decrypted by the gateway (`consent-poll.ts`, own
   messageSecret per poll, persisted in `gateway/auth/consent-polls.json`,
   votes map by SHA-256(optionName) hex) and forwarded as a targeted
   `yes <chat>` / `no <chat>` console command — more precise than plain
   `yes`/`no`, which still work and stay the fallback if decryption fails.
+- **Names**: the gateway captures `pushName` per message; storage keeps
+  `contacts(jid, name)`; consent prompts and LIST show "Name (jid)" and the
+  pending chat's last message.
+- **Trusted entries (zero-first-ask)**: `TRUST <name | +number> [chat id]` in
+  the operator DM watches a sender by NAME or PHONE NUMBER (numbers win on
+  precedence — precise, unspoofable; commas list several, a trailing chat id
+  scopes all). The gateway resolves group senders via group metadata
+  (`sender_number` + the operator's SAVED contact name, cached
+  `group_metadata.cache_minutes`); the first sender matching an unbound entry
+  is auto-approved (fresh TTL) and bound to their jid (TOFU) — the operator
+  gets one notification and `STOP <chat id>` deletes the watch row (the
+  stopped chat cannot resurrect). A different jid claiming a bound name is NOT
+  auto-approved — it falls back to the normal (sticky) consent ask. Scoped
+  entries win over global ones; a DECLINED chat outranks any watch (only
+  `ALLOW <n>` revives).
+- **Context notes**: `REMEMBER <chat> <note>` appends (TTL `context_notes.default_ttl_days`
+  — re-REMEMBER refreshes), `FORGET <chat>` clears; active notes are injected
+  as a CHAT CONTEXT prompt block (last `context_notes.max_notes`). When the
+  model sets `needs_context` AND no notes exist: the message is PAUSED (no
+  reply to the person) and the operator is asked once, rate-limited to
+  `context_notes.ask_cooldown_hours` per chat; if never answered, later
+  messages reply naturally without exposing anything. `REMEMBER` also
+  RESUMES: if the chat's newest message is a recent unanswered incoming, a
+  context-informed reply is delivered then (consent-deliver machinery).
 - **Model fallback chain**: `gemini-3.5-flash-lite` → `3.6-flash` → `3.8-flash`
   (1 Gemini round if OpenRouter configured) → OpenRouter `:free` models →
   live-catalog self-heal → clean silence on total failure. 503/504/429/404 fall
   through; 401/403 abort.
 - **Human-like send**: randomized delay = reading(incoming len) + typing(reply len)
   + base + extra 1–5s, capped 20s; composing presence; one message per turn.
+- **Read receipts**: the gateway blue-ticks a message the moment it ENGAGES
+  (reply or react) — `sock.readMessages` (WhatsApp-Web-style); ignored messages
+  stay unticked (humans don't read everything instantly). Needs "Read receipts"
+  ON in the phone's WhatsApp privacy settings; toggle: settings.json
+  `read_receipts.enabled`.
 - **Reactions**: two-tier policy. PRIMARY: the model reacts only when it is
   confident the USER themself would have tapped a reaction (`user_would_react`
   in the contract) — mirroring their habits; never rate-limited. SECONDARY:
@@ -79,10 +138,24 @@ bash scripts/service.sh install|status|logs|restart|uninstall   # launchd (3 ser
   (`config.reactions.cooldown_seconds`, 120s). The model outputs the emoji
   only; the gateway attaches it to the triggering message key (the model can't
   pick targets). Whitelist: `learned_reactions` first (the user's own
-  vocabulary, frequency-ordered) ∪ `config.reactions.allowed`.
-- **Style mirroring**: last 10 operator messages of the chat injected as
-  `STYLE EXAMPLES`; persona mirrors length/Hinglish/emoji but never claims to BE
-  the operator. Warmth rules: never rude/dismissive/repetitive; jokes get told.
+  vocabulary, frequency-ordered) ∪ `config.reactions.allowed`. Every react
+  decision is logged (`[agent] react decision: …`). The prompt includes
+  `REACTIONS THE USER MAKES IN THIS CHAT` (from `chat_reactions`) — reactions
+  are learned from the bot phone AND the operator's personal phone (DM only;
+  group reactions by others are ignored).
+- **Style mirroring**: operator style samples strictly OUTSIDE the conversation
+  window (no duplicated tokens — in-window messages are visible as "typed by
+  hand"); if none exist, the style block points at the typed-by-hand lines.
+- **Media (images/stickers/GIFs)**: the gateway downloads bytes (GIFs/videos
+  via the inline jpegThumbnail frame) and forwards to `/messages/media`; the
+  agent gate-consents FIRST (unapproved chats' media is never processed),
+  enforces size (`media.max_mb`) + mimetype allowlist, then the model SEES the
+  media through the ordinary prompt (same AgentOutput contract). Media is
+  UNTRUSTED content: persona carries an explicit never-follow-instructions-
+  inside-it rule; storage uses a `[image]` placeholder + caption.
+- **Global context**: `REMEMBER-GLOBAL <note>` / `FORGET-GLOBAL` — notes with a
+  `__global__` sentinel chat id, injected into EVERY chat's prompt prefixed
+  `GLOBAL:`; LIST shows them.
 - **Polls**: on "kya banau aaj?"-style food-choice questions the model may
   attach ONE native poll (`AgentOutput.poll`, question + options from the
   suggestion pool); agent sanitizes (settings.json `polls`: enabled, max
@@ -115,26 +188,13 @@ bash scripts/service.sh install|status|logs|restart|uninstall   # launchd (3 ser
 
 ## Current state (as of this handoff)
 
-All three launchd services healthy, real Gemini active, WhatsApp linked via
-`gateway/auth/`. Secrets in `.env` (never committed — verified). LICENSE (MIT)
-added. NOT yet done (roadmap, in rough order):
+All three launchd services healthy, real Gemini active, WhatsApp linked (agent
+runs on the operator's personal number; console = "Message yourself"). Secrets
+in `.env` (never committed — verified). LICENSE (MIT) added.
 
-1. Commit + push to GitHub (repo name `shado-agent`)
-2. Consolidate tests into pytest + a couple of gateway vitest specs — DONE
-   (tests/test_agent_flow.py replaced scripts/test_agent_flow.sh; vitest
-   specs for delay math, extractText, chatAllowed; pytest 9.1.1; vitest
-   4.1.11 pinned; both audits clean)
-3. GitHub Actions CI: typecheck + both audits on every push — DONE
-   (.github/workflows/ci.yml)
-4. WhatsApp polls ("kya banau aaj?" as a native poll) — DONE (v1 send-only:
-   AgentOutput.poll contract, gateway sendPollIfAny; votes not read yet)
-5. Mimicry Phase 2: learned voice fingerprint (one Gemini call per ~100 operator
-   messages → structured profile → `style_profile` table → injected into prompts)
-6. Mimicry Phase 3: mirror the operator's reply-latency distribution
-7. Voice notes: Gemini TTS → ffmpeg → OGG/Opus → `{ ptt: true }` (needs ffmpeg)
-8. Telegram gateway (official Bot API — first platform-agnosticism proof)
-9. Posting: draft → operator approval → X/LinkedIn (public blast radius — always approval-gated)
-10. Retention job: prune messages/suggestions older than N days
+**Requirements + priorities live in ROADMAP.md — keep it updated when work
+completes; don't grow a roadmap here.** Known deferred designs (context
+mechanism constraints, TRUST-by-number, poll vote tallying) are captured there.
 
 ## Persona notes (agent/app/persona.py — edit carefully)
 

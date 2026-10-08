@@ -36,6 +36,19 @@ class PollOutput(BaseModel):
     options: list[str]
 
 
+class DistilledVoice(BaseModel):
+    length: str | None = None
+    language_mix: str | None = None
+    emoji_habits: str | None = None
+    punctuation: str | None = None
+    tone: str | None = None
+
+
+class DistillOutput(BaseModel):
+    voice: DistilledVoice
+    facts: list[str]
+
+
 class AgentOutput(BaseModel):
     reply: str | None
     meals: list[ExtractedMeal]
@@ -47,6 +60,11 @@ class AgentOutput(BaseModel):
     # tapped a reaction here (mirroring their habits) — such reactions are
     # never rate-limited; unsure-but-wants-to reactions are.
     user_would_react: bool = False
+    # True ONLY when the chat references something the model lacks context
+    # for (inside jokes, plans, people) AND answering without it would be
+    # wrong. The agent then pauses (no reply), asks the operator once
+    # (rate-limited), and enriches future replies via CHAT CONTEXT.
+    needs_context: bool = False
     poll: PollOutput | None = None
 
 
@@ -99,6 +117,10 @@ class GeminiClient:
         chat_id: str = "",
         operator_examples: list[str] | None = None,
         allowed_reactions: list[str] | None = None,
+        chat_reactions: list[str] | None = None,
+        chat_context: list[str] | None = None,
+        voice_profile: str | None = None,
+        facts: list[str] | None = None,
     ) -> AgentOutput:
         if self._dry_run:
             return AgentOutput(
@@ -129,6 +151,10 @@ class GeminiClient:
                         chat_id,
                         operator_examples,
                         allowed_reactions,
+                        chat_reactions,
+                        chat_context,
+                        voice_profile,
+                        facts,
                     )
                     if model != self._primary or round_no:
                         print(
@@ -156,10 +182,78 @@ class GeminiClient:
             return self._last_resort.decide_and_extract(
                 history, meals_today, eaten_recent, suggestions, pool,
                 peer_bot_sender, incoming_text, today, now, chat_id,
-                operator_examples, allowed_reactions,
+                operator_examples, allowed_reactions, chat_reactions, chat_context,
+                voice_profile, facts,
             )
         assert last_error is not None
         raise last_error
+
+    def distill(self, operator_samples: list[str], chat_lines: list[str]) -> DistillOutput:
+        """The profiler agent: distill the operator's VOICE (how they write)
+        and the chat's durable FACTS from message history. Runs in the
+        background — never on the reply path."""
+        if self._dry_run:
+            return DistillOutput(
+                voice=DistilledVoice(
+                    length="short, 5-10 words",
+                    language_mix="casual Hinglish",
+                    emoji_habits="sparse, one every few messages",
+                ),
+                facts=["[dry-run] no facts extracted"],
+            )
+        return self._call_distill(self._primary, operator_samples, chat_lines)
+
+    def _call_distill(self, model: str, operator_samples: list[str], chat_lines: list[str]) -> DistillOutput:
+        response = self._client.models.generate_content(
+            model=model,
+            contents=(
+                "OPERATOR'S RECENT MESSAGES (the person whose side you're on):\n"
+                + "\n".join(operator_samples)
+                + "\n\nTHE CHAT'S RECENT CONVERSATION:\n"
+                + "\n".join(chat_lines)
+            ),
+            config=types.GenerateContentConfig(
+                system_instruction=DISTILLER_PROMPT,
+                temperature=0.3,
+                response_mime_type="application/json",
+                response_schema=DistillOutput,
+            ),
+        )
+        if not response.parsed:
+            raise RuntimeError(f"distiller returned unparsable output: {response.text!r}")
+        return response.parsed
+
+    def see_and_reply(self, image_bytes: bytes, mimetype: str, prompt_text: str) -> AgentOutput:
+        """The SAME persona contract, but the message is an image/sticker/gif
+        frame: contents = [media part, prompt]. Reply/react/etc. still come
+        through the structured AgentOutput, so the transport is unchanged."""
+        if self._dry_run:
+            return AgentOutput(
+                reply=f"[dry-run] saw the image and would reply: '{prompt_text[-30:]}'",
+                meals=[],
+                suggested_dishes=[],
+                selected_dish=None,
+                is_food_related=False,
+            )
+        return self._see_call(self._primary, image_bytes, mimetype, prompt_text)
+
+    def _see_call(self, model: str, image_bytes: bytes, mimetype: str, prompt_text: str) -> AgentOutput:
+        response = self._client.models.generate_content(
+            model=model,
+            contents=[
+                types.Part.from_bytes(data=image_bytes, mime_type=mimetype),
+                prompt_text,
+            ],
+            config=types.GenerateContentConfig(
+                system_instruction=SYSTEM_PROMPT,
+                temperature=1.0,
+                response_mime_type="application/json",
+                response_schema=AgentOutput,
+            ),
+        )
+        if not response.parsed:
+            raise RuntimeError(f"vision call returned unparsable output: {response.text!r}")
+        return response.parsed
 
     def _call_model(
         self,
@@ -176,13 +270,18 @@ class GeminiClient:
         chat_id: str = "",
         operator_examples: list[str] | None = None,
         allowed_reactions: list[str] | None = None,
+        chat_reactions: list[str] | None = None,
+        chat_context: list[str] | None = None,
+        voice_profile: str | None = None,
+        facts: list[str] | None = None,
     ) -> AgentOutput:
         response = self._client.models.generate_content(
             model=model,
             contents=build_user_prompt(
                 history, meals_today, eaten_recent, suggestions, pool,
                 peer_bot_sender, today, incoming_text, now, chat_id,
-                operator_examples, allowed_reactions,
+                operator_examples, allowed_reactions, chat_reactions, chat_context,
+                voice_profile, facts,
             ),
             config=types.GenerateContentConfig(
                 system_instruction=SYSTEM_PROMPT,

@@ -59,6 +59,18 @@ class TestMessages:
         repo.add_message(_record("incoming human text", "in", now, source="operator"))
         assert repo.operator_exemplars(GROUP, limit=10) == ["typed by ved on bot phone"]
 
+    def test_operator_exemplars_exclude_the_conversation_window(self, repo):
+        """No duplicated tokens: exemplars must be strictly OLDER than the
+        window cutoff — in-window operator messages are already in the chat."""
+        now = datetime.now(timezone.utc)
+        old, in_window = now - timedelta(hours=2), now - timedelta(minutes=1)
+        repo.add_message(_record("older style sample", "out", old, source="operator"))
+        repo.add_message(_record("fresh typed message", "out", in_window, source="operator"))
+        repo.add_message(_record("someone else", "in", now))
+        assert repo.operator_exemplars(GROUP, 10, before=in_window) == ["older style sample"]
+        # empty history → no cutoff → the plain last-10 behaviour
+        assert repo.operator_exemplars(GROUP, 10) == ["fresh typed message", "older style sample"]
+
 
 class TestMeals:
     def test_meal_round_trip(self, repo):
@@ -121,6 +133,38 @@ class TestConsents:
                 (datetime.now(timezone.utc) - timedelta(minutes=minutes), chat_id),
             )
 
+    def _expire(self, chat_id: str) -> None:
+        """Force a granted consent past its expiry so the sticky path can fire."""
+        with connect(TEST_DATABASE_URL, autocommit=True) as conn, conn.cursor() as cur:
+            cur.execute(
+                "UPDATE chat_consents SET expires_at = now() - interval '1 minute' "
+                "WHERE chat_id = %s",
+                (chat_id,),
+            )
+
+    def test_remembered_yes_is_silently_regranted_after_expiry(self, repo):
+        assert repo.request_consent("unknown@g.us") is True
+        repo.grant_consent("unknown@g.us", ttl_hours=1)
+        self._expire("unknown@g.us")
+        assert repo.has_active_consent("unknown@g.us") is False
+        # No new ask — the remembered approval silently re-grants.
+        assert repo.request_consent("unknown@g.us", ttl_hours=24) is False
+        assert repo.has_active_consent("unknown@g.us") is True
+        status_row = repo.pending_consents()
+        assert status_row == []
+
+    def test_stop_clears_the_memory(self, repo):
+        repo.request_consent("unknown@g.us")
+        repo.grant_latest_pending(ttl_hours=1)
+        repo.revoke_consent("unknown@g.us")  # STOP <id>
+        assert repo.request_consent("unknown@g.us", ttl_hours=24) is True  # asks again
+
+    def test_stop_all_clears_memory_too(self, repo):
+        repo.request_consent("unknown@g.us")
+        repo.grant_latest_pending(ttl_hours=1)
+        repo.revoke_active_consents()  # bare STOP
+        assert repo.request_consent("unknown@g.us", ttl_hours=24) is True
+
     def test_request_then_grant_flow(self, repo):
         assert repo.request_consent("unknown@g.us") is True        # asks the operator
         assert repo.request_consent("unknown@g.us") is False       # pending, no nagging
@@ -158,6 +202,106 @@ class TestConsents:
         repo.request_consent("unknown@g.us")
         repo.grant_consent("unknown@g.us", ttl_hours=0)  # expires immediately
         assert repo.has_active_consent("unknown@g.us") is False
+
+
+class TestTrustedNames:
+    def test_same_name_different_jid_falls_back_to_ask(self, repo):
+        repo.trust_name("Rohit")
+        repo.auto_grant_if_trusted("918dm@s.whatsapp.net", "918dm@s.whatsapp.net", "Rohit", 24)
+        # a DIFFERENT sender claiming the same name is not auto-approved
+        notify = repo.auto_grant_if_trusted("120363fam@g.us", "999impostor@s.whatsapp.net", "Rohit", 24)
+        assert notify is None
+        assert repo.has_active_consent("120363fam@g.us") is False
+
+    def test_scope_limits_where_the_name_matches(self, repo):
+        repo.trust_name("Rohit", "120363fam@g.us")
+        notify = repo.auto_grant_if_trusted("120363other@g.us", "918rohit@s.whatsapp.net", "Rohit", 24)
+        assert notify is None  # scoped trust doesn't leak to other chats
+        notify = repo.auto_grant_if_trusted("120363fam@g.us", "918rohit@s.whatsapp.net", "Rohit", 24)
+        assert notify is not None
+
+    def test_stop_clears_the_binding(self, repo):
+        repo.trust_name("Rohit")
+        repo.auto_grant_if_trusted("918dm@s.whatsapp.net", "918rohit@s.whatsapp.net", "Rohit", 24)
+        repo.revoke_consent("918dm@s.whatsapp.net")
+        # STOP deletes the watch tied to that chat — a stopped chat cannot be
+        # resurrected by the next same-named message.
+        assert repo.trusted_rows() == []
+        # a group-scoped binding clears when the GROUP chat is stopped
+        repo.trust_name("Rohit", "120363fam@g.us")
+        repo.auto_grant_if_trusted("120363fam@g.us", "918rohit@s.whatsapp.net", "Rohit", 24)
+        repo.revoke_consent("120363fam@g.us")
+        assert repo.trusted_rows() == []
+        # next Rohit-named sender must re-ask (sticky consent), not auto-grant
+        notify = repo.auto_grant_if_trusted("918dm@s.whatsapp.net", "918rohit@s.whatsapp.net", "Rohit", 24)
+        assert notify is None  # watch is gone; nothing to re-bind
+
+    def test_stop_really_stops_a_trusted_chat(self, repo):
+        """Ved's live bug: STOP, then the same-named sender auto-approved again."""
+        repo.trust_name("Manan")
+        assert repo.auto_grant_if_trusted("918manan@s.whatsapp.net", "918manan@s.whatsapp.net", "Manan", 24) is not None
+        assert repo.has_active_consent("918manan@s.whatsapp.net") is True
+        repo.revoke_active_consents()  # bare STOP
+        assert repo.has_active_consent("918manan@s.whatsapp.net") is False
+        assert repo.trusted_rows() == []  # watch deleted with it
+        # next message falls back to the normal sticky ask, never auto-grant
+        assert repo.auto_grant_if_trusted("918manan@s.whatsapp.net", "918manan@s.whatsapp.net", "Manan", 24) is None
+        assert repo.request_consent("918manan@s.whatsapp.net", ttl_hours=24) is True
+
+    def test_untrust_removes_all_entries_for_a_name(self, repo):
+        repo.trust_name("Rohit")
+        repo.trust_name("Rohit", "120363fam@g.us")
+        assert repo.untrust_name("rohit") == 2  # case-insensitive
+        assert repo.trusted_rows() == []
+
+    def _expire(self, chat_id: str) -> None:
+        with connect(TEST_DATABASE_URL, autocommit=True) as conn, conn.cursor() as cur:
+            cur.execute(
+                "UPDATE chat_consents SET expires_at = now() - interval '1 minute' "
+                "WHERE chat_id = %s",
+                (chat_id,),
+            )
+
+    def test_tofu_first_match_auto_grants_and_binds(self, repo):
+        repo.trust_name("Rohit", "120363fam@g.us")
+        notify = repo.auto_grant_if_trusted("120363fam@g.us", "918rohit@s.whatsapp.net", "Rohit", ttl_hours=24)
+        assert notify is not None and "Rohit" in notify
+        assert repo.has_active_consent("120363fam@g.us") is True
+        assert repo.trusted_rows() == [("Rohit", None, "120363fam@g.us", "918rohit@s.whatsapp.net")]
+        self._expire("120363fam@g.us")
+        assert repo.auto_grant_if_trusted("120363fam@g.us", "918rohit@s.whatsapp.net", "Rohit", 24) is None
+        assert repo.has_active_consent("120363fam@g.us") is True
+
+
+class TestDistillerState:
+    def test_counter_bumps_and_due_logic(self, repo):
+        assert repo.chats_due_for_distill(100, 6) == []
+        for _ in range(100):
+            repo.bump_distill_counter(GROUP)
+        assert repo.chats_due_for_distill(100, 6) == [GROUP]
+        repo.mark_distill_run(GROUP)
+        assert repo.chats_due_for_distill(100, 6) == []  # gap not elapsed
+        # below threshold → not due even with no last run
+        repo.bump_distill_counter(GROUP)
+        assert repo.chats_due_for_distill(100, 6) == []
+
+    def test_style_profile_overwrite(self, repo):
+        assert repo.style_profile(GROUP) is None
+        repo.save_style_profile(GROUP, "• tone: warm")
+        assert repo.style_profile(GROUP) == "• tone: warm"
+        repo.save_style_profile(GROUP, "• tone: dry")
+        assert repo.style_profile(GROUP) == "• tone: dry"  # latest voice wins
+
+    def test_facts_merge_dedupes_and_refreshes(self, repo):
+        repo.merge_facts(GROUP, ["Priya exam Oct 12", "trip to Manali"], ttl_days=30)
+        assert sorted(repo.active_facts(GROUP, 10)) == ["Priya exam Oct 12", "trip to Manali"]
+        # re-mentioned fact gets refreshed, not duplicated
+        repo.merge_facts(GROUP, ["priya exam oct 12"], ttl_days=30)
+        assert repo.active_facts(GROUP, 10).count("Priya exam Oct 12") == 1
+        assert len(repo.active_facts(GROUP, 10)) == 2
+        # blank entries ignored
+        repo.merge_facts(GROUP, ["  ", ""], ttl_days=30)
+        assert len(repo.active_facts(GROUP, 10)) == 2
 
 
 class TestLearnedReactions:

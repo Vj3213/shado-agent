@@ -79,7 +79,9 @@ def clean_tables(isolated_test_database):
     with connect(TEST_DATABASE_URL, autocommit=True) as conn, conn.cursor() as cur:
         cur.execute(
             "TRUNCATE messages, meal_log, bot_loop_state, suggestion, "
-            "chat_consents, learned_reactions"
+            "chat_consents, learned_reactions, chat_reactions, contacts, "
+            "trusted_names, chat_context, context_asks, "
+            "style_profile, chat_facts, distill_state"
         )
     yield
 

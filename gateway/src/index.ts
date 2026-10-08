@@ -47,6 +47,13 @@ async function main(): Promise<void> {
   process.on("SIGTERM", () => void shutdown());
 }
 
+// A transport process must NEVER die from an escaped async rejection — log and
+// keep serving (the WhatsApp session lives in memory; a crash re-queues media
+// and can wedge the loop again).
+process.on("unhandledRejection", (reason) => {
+  console.error("[gateway] unhandled rejection (kept alive):", reason);
+});
+
 main().catch((error) => {
   console.error("Gateway failed to start:", error);
   process.exit(1);

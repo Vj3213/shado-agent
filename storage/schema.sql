@@ -82,14 +82,100 @@ CREATE TABLE IF NOT EXISTS learned_reactions (
     learned_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 
+-- Same idea, per chat: how the operator reacts HERE (mirroring material).
+CREATE TABLE IF NOT EXISTS chat_reactions (
+    chat_id    TEXT NOT NULL,
+    emoji      TEXT NOT NULL,
+    times      INT NOT NULL DEFAULT 1 CHECK (times >= 1),
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    PRIMARY KEY (chat_id, emoji)
+);
+
+-- Sender display names (WhatsApp pushName), for readable consent prompts.
+CREATE TABLE IF NOT EXISTS contacts (
+    jid        TEXT PRIMARY KEY,
+    name       TEXT NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Trusted entries the operator pre-declares in their DM — by NAME or NUMBER:
+-- the first sender matching an unbound entry (within scope) is auto-approved
+-- for 24h TTL — no ask. Numbers win over names (precise, unspoofable).
+-- TOFU: the match binds to that jid; another jid with the same name is NOT
+-- auto-approved (falls back to the normal ask). STOP deletes the watch row.
+CREATE TABLE IF NOT EXISTS trusted_names (
+    id         SERIAL PRIMARY KEY,
+    name       TEXT,
+    number     TEXT,
+    scope      TEXT NOT NULL DEFAULT 'any',
+    bound_jid  TEXT,
+    bound_chat TEXT,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    UNIQUE (name, scope),
+    UNIQUE (number, scope)
+);
+ALTER TABLE trusted_names ADD COLUMN IF NOT EXISTS number TEXT;
+ALTER TABLE trusted_names ALTER COLUMN name DROP NOT NULL;
+ALTER TABLE trusted_names ALTER COLUMN number DROP NOT NULL;
+
 -- Consent-gated dynamic allowlist, controlled from the operator's self-chat:
 -- pending (asked once) -> granted (TTL) / declined (silent forever)
 --                      -> revoked (re-asks on next message)
+-- `remembered`: the operator approved this chat at least once — expiry then
+-- silently re-grants (no re-ask). STOP clears it so a stop really stops.
 CREATE TABLE IF NOT EXISTS chat_consents (
     chat_id    TEXT PRIMARY KEY,
     status     TEXT NOT NULL DEFAULT 'pending'
                CHECK (status IN ('pending', 'granted', 'declined', 'revoked')),
     granted_at TIMESTAMPTZ,
     expires_at TIMESTAMPTZ,
+    remembered BOOLEAN NOT NULL DEFAULT FALSE,
     updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+ALTER TABLE chat_consents ADD COLUMN IF NOT EXISTS remembered BOOLEAN NOT NULL DEFAULT FALSE;
+
+-- Operator-curated per-chat context ("REMEMBER <chat> <note>"): injected into
+-- that chat's prompt while fresh; expired notes are ignored, not deleted —
+-- the retention sweep removes them.
+CREATE TABLE IF NOT EXISTS chat_context (
+    id         BIGSERIAL PRIMARY KEY,
+    chat_id    TEXT NOT NULL,
+    note       TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    expires_at TIMESTAMPTZ NOT NULL DEFAULT now() + interval '7 days'
+);
+CREATE INDEX IF NOT EXISTS idx_chat_context_chat ON chat_context (chat_id, id DESC);
+
+-- Ask-for-context rate limiting (one ask per chat per cooldown window).
+CREATE TABLE IF NOT EXISTS context_asks (
+    chat_id     TEXT PRIMARY KEY,
+    last_ask_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- ===== Mimicry Phase 2: the background distiller =====
+
+-- Voice fingerprint: HOW the operator writes in this chat. One row per chat,
+-- overwritten on every distill run — the most recent voice always wins.
+CREATE TABLE IF NOT EXISTS style_profile (
+    chat_id    TEXT PRIMARY KEY,
+    profile    TEXT NOT NULL,
+    updated_at TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+
+-- Durable facts extracted from the chat's life (TTL'd; re-mentioned facts
+-- get their expiry refreshed on each distill run).
+CREATE TABLE IF NOT EXISTS chat_facts (
+    id         BIGSERIAL PRIMARY KEY,
+    chat_id    TEXT NOT NULL,
+    fact       TEXT NOT NULL,
+    created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
+    expires_at TIMESTAMPTZ NOT NULL DEFAULT now() + interval '30 days'
+);
+CREATE INDEX IF NOT EXISTS idx_chat_facts_chat ON chat_facts (chat_id, id DESC);
+
+-- Distiller bookkeeping: operator-message counter since last run + run stamp.
+CREATE TABLE IF NOT EXISTS distill_state (
+    chat_id             TEXT PRIMARY KEY,
+    operator_msgs_since INT NOT NULL DEFAULT 0,
+    last_run_at         TIMESTAMPTZ
 );

@@ -56,11 +56,16 @@ class OpenRouterClient:
         chat_id: str = "",
         operator_examples: list[str] | None = None,
         allowed_reactions: list[str] | None = None,
+        chat_reactions: list[str] | None = None,
+        chat_context: list[str] | None = None,
+        voice_profile: str | None = None,
+        facts: list[str] | None = None,
     ) -> AgentOutput:
         user_prompt = build_user_prompt(
             history, meals_today, eaten_recent, suggestions, pool,
             peer_bot_sender, today, incoming_text, now, chat_id,
-            operator_examples, allowed_reactions,
+            operator_examples, allowed_reactions, chat_reactions, chat_context,
+            voice_profile, facts,
         )
         payload = {
             "model": None,  # filled per attempt

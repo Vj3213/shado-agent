@@ -18,6 +18,33 @@
     "options": ["YES", "NO"],
     "delay_after_prompt_ms": [800, 2000]
   },
+  "group_metadata": {
+    "cache_minutes": 10
+  },
+  "context_notes": {
+    "default_ttl_days": 7,
+    "max_notes": 5,
+    "ask_cooldown_hours": 12,
+    "resume_min_gap_minutes": 3
+  },
+  "distiller": {
+    "operator_msgs_per_run": 100,
+    "min_gap_hours": 6,
+    "facts_ttl_days": 30,
+    "facts_in_prompt": 5,
+    "voice_samples": 100,
+    "fact_window_messages": 100,
+    "poll_seconds": 300
+  },
+  "media": {
+    "reply_to_media": true,
+    "max_mb": 10,
+    "download_timeout_seconds": 45,
+    "allowed_mimetypes": ["image/jpeg", "image/png", "image/webp"]
+  },
+  "read_receipts": {
+    "enabled": true
+  },
   "trigger": {
     "reply_to_everything": true,
     "prefixes": ["ved:", "@ved"],
