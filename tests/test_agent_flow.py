@@ -341,6 +341,14 @@ class TestContextNotes:
         assert body["reason"] == "console_context_noted"
         assert repo.context_notes(UNKNOWN_GROUP, 5) == ["Papa is dieting — no fried stuff"]
 
+        # Re-remembering the EXACT same note (case-insensitive) refreshes it,
+        # NOT duplicates it.
+        client.post(
+            "/messages/incoming",
+            json=_incoming(f"REMEMBER {UNKNOWN_GROUP} papa is dieting — no fried stuff", chat=OPERATOR, sender=OPERATOR),
+        )
+        assert repo.context_notes(UNKNOWN_GROUP, 5) == ["Papa is dieting — no fried stuff"]
+
         body = client.post(
             "/messages/incoming",
             json=_incoming(f"FORGET {UNKNOWN_GROUP}", chat=OPERATOR, sender=OPERATOR),

@@ -35,7 +35,10 @@ export async function askAgentConsole(text: string): Promise<AgentDecision | nul
       method: "POST",
       headers: { "content-type": "application/json" },
       body: JSON.stringify({ text }),
-      signal: AbortSignal.timeout(30_000),
+      // Console commands can trigger real generations inline (YES/ALLOW
+      // deliver a pending reply; REMEMBER resumes one) — the model chain can
+      // take a minute+. A short timeout DROPS the reply mid-generation.
+      signal: AbortSignal.timeout(INCOMING_TIMEOUT_MS),
     });
     if (!response.ok) {
       console.error(`[agent-client] console returned HTTP ${response.status}`);

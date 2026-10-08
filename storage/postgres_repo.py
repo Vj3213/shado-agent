@@ -447,6 +447,19 @@ class PostgresRepository(MealAgentRepository):
         if not note:
             return
         with self._connect() as conn, conn.cursor() as cur:
+            # Re-remembering the SAME note refreshes it instead of duplicating.
+            cur.execute(
+                "SELECT 1 FROM chat_context WHERE chat_id = %s AND lower(note) = lower(%s) "
+                "AND expires_at > now()",
+                (chat_id, note),
+            )
+            if cur.fetchone():
+                cur.execute(
+                    "UPDATE chat_context SET expires_at = now() + make_interval(days => %s) "
+                    "WHERE chat_id = %s AND lower(note) = lower(%s) AND expires_at > now()",
+                    (ttl_days, chat_id, note),
+                )
+                return
             cur.execute(
                 "INSERT INTO chat_context (chat_id, note, expires_at) "
                 "VALUES (%s, %s, now() + make_interval(days => %s))",
