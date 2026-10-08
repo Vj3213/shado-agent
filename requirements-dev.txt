@@ -2,3 +2,5 @@
 pytest==9.1.1
 httpx==0.28.1
 pip-audit==2.7.3
+# Audit floor: CI runners ship setuptools 79.x with PYSEC-2026-3447; keep patched.
+setuptools>=83.0.0
